@@ -1,0 +1,310 @@
+"use client";
+
+import { useState } from "react";
+import { AccountForm } from "@/components/AccountForm";
+import { LABEL_COLORS } from "@/lib/label-colors";
+import type { MailAccount } from "@/lib/types";
+
+type SettingsTab = "mailboxes";
+type MailboxesView = "list" | "add" | "edit";
+
+interface SettingsModalProps {
+  accounts: MailAccount[];
+  onClose: () => void;
+  onChange: () => void;
+}
+
+export function SettingsModal({
+  accounts,
+  onClose,
+  onChange,
+}: SettingsModalProps) {
+  const [tab, setTab] = useState<SettingsTab>("mailboxes");
+  const [view, setView] = useState<MailboxesView>("list");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [fromName, setFromName] = useState("");
+  const [color, setColor] = useState(LABEL_COLORS[5]);
+  const [signature, setSignature] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const editingAccount = accounts.find((account) => account.id === editingId);
+
+  const resetEditForm = () => {
+    setEditingId(null);
+    setName("");
+    setFromName("");
+    setColor(LABEL_COLORS[5]);
+    setSignature("");
+    setError("");
+    setView("list");
+  };
+
+  const openEdit = (account: MailAccount) => {
+    setEditingId(account.id);
+    setName(account.name ?? "");
+    setFromName(account.fromName ?? "");
+    setColor(account.color || LABEL_COLORS[5]);
+    setSignature(account.signature ?? "");
+    setError("");
+    setView("edit");
+  };
+
+  const handleSaveEdit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingId) return;
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/accounts/${editingId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, fromName, color, signature }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Не удалось сохранить");
+        return;
+      }
+      resetEditForm();
+      onChange();
+    } catch {
+      setError("Не удалось сохранить настройки ящика");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDelete = async (account: MailAccount) => {
+    if (
+      !confirm(
+        `Удалить ящик «${account.name}» (${account.email})? Это действие нельзя отменить.`
+      )
+    ) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/accounts/${account.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.error || "Не удалось удалить ящик");
+        return;
+      }
+      if (editingId === account.id) resetEditForm();
+      onChange();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div
+        className="settings-modal"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <aside className="settings-tabs">
+          <div className="settings-tabs-header">
+            <h2>Настройки</h2>
+          </div>
+          <nav className="settings-tabs-nav">
+            <button
+              type="button"
+              className={`settings-tab ${tab === "mailboxes" ? "active" : ""}`}
+              onClick={() => {
+                setTab("mailboxes");
+                resetEditForm();
+              }}
+            >
+              Почтовые ящики
+            </button>
+          </nav>
+        </aside>
+
+        <section className="settings-panel">
+          <div className="settings-panel-header">
+            <h3>
+              {view === "add"
+                ? "Добавить ящик"
+                : view === "edit"
+                  ? "Редактировать ящик"
+                  : "Почтовые ящики"}
+            </h3>
+            <button
+              type="button"
+              className="settings-close-btn"
+              onClick={onClose}
+              aria-label="Закрыть"
+            >
+              ×
+            </button>
+          </div>
+
+          {error && view !== "add" && (
+            <div className="error-banner settings-error">{error}</div>
+          )}
+
+          {tab === "mailboxes" && view === "list" && (
+            <div className="settings-mailboxes">
+              <button
+                type="button"
+                className="btn btn-primary settings-add-btn"
+                onClick={() => {
+                  setError("");
+                  setView("add");
+                }}
+              >
+                + Добавить ящик
+              </button>
+
+              {accounts.length === 0 ? (
+                <p className="settings-empty">Почтовые ящики не подключены</p>
+              ) : (
+                <ul className="settings-account-list">
+                  {accounts.map((account) => (
+                    <li key={account.id} className="settings-account-item">
+                      <div className="settings-account-main">
+                        <span
+                          className="settings-account-dot"
+                          style={{ backgroundColor: account.color }}
+                        />
+                        <div className="settings-account-info">
+                          <div className="settings-account-name">
+                            {account.name}
+                          </div>
+                          <div className="settings-account-email">
+                            {account.email}
+                            {account.fromName && (
+                              <span className="settings-account-from">
+                                {" "}
+                                · {account.fromName}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="settings-account-actions">
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => openEdit(account)}
+                        >
+                          Изменить
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          onClick={() => handleDelete(account)}
+                          disabled={loading}
+                        >
+                          Удалить
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {tab === "mailboxes" && view === "add" && (
+            <div className="settings-form-wrap">
+              <AccountForm
+                embedded
+                onCancel={() => setView("list")}
+                onSuccess={() => {
+                  setView("list");
+                  onChange();
+                }}
+              />
+            </div>
+          )}
+
+          {tab === "mailboxes" && view === "edit" && editingAccount && (
+            <form className="settings-edit-form" onSubmit={handleSaveEdit}>
+              <div className="form-group">
+                <label>Email</label>
+                <input value={editingAccount.email} disabled />
+              </div>
+
+              <div className="form-group">
+                <label>Название ящика</label>
+                <input
+                  value={name ?? ""}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder="Рабочая почта"
+                  required
+                />
+                <p className="form-hint">
+                  Отображается в списке ящиков и на бейдже письма
+                </p>
+              </div>
+
+              <div className="form-group">
+                <label>Имя отправителя</label>
+                <input
+                  value={fromName ?? ""}
+                  onChange={(event) => setFromName(event.target.value)}
+                  placeholder="Иван Иванов"
+                />
+                <p className="form-hint">
+                  Как вас увидят получатели в поле «От». Если пусто — используется
+                  название ящика
+                </p>
+              </div>
+
+              <div className="form-group">
+                <label>Цвет бейджа</label>
+                <div className="color-picker">
+                  {LABEL_COLORS.map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      className={`color-swatch ${color === item ? "selected" : ""}`}
+                      style={{ backgroundColor: item }}
+                      onClick={() => setColor(item)}
+                      aria-label={`Цвет ${item}`}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>Подпись для новых писем</label>
+                <textarea
+                  value={signature ?? ""}
+                  onChange={(event) => setSignature(event.target.value)}
+                  placeholder="С уважением,&#10;Иван Иванов"
+                  rows={5}
+                />
+                <p className="form-hint">
+                  Подпись автоматически добавляется в новые письма и ответы с
+                  этого ящика
+                </p>
+              </div>
+
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={resetEditForm}
+                >
+                  Назад
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={loading}
+                >
+                  {loading ? "Сохранение…" : "Сохранить"}
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
