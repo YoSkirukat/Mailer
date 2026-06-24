@@ -197,6 +197,95 @@ export async function fetchMailbox(
   });
 }
 
+async function searchUnseenUids(client: ImapFlow): Promise<number[]> {
+  for (const criteria of [{ unseen: true }, { seen: false }] as const) {
+    try {
+      const uids = await client.search(criteria, { uid: true });
+      if (uids && uids.length > 0) return uids;
+    } catch {
+      /* пробуем следующий критерий */
+    }
+  }
+  return [];
+}
+
+async function fetchUnreadFromFlagsScan(
+  client: ImapFlow,
+  account: AccountWithPassword,
+  folderId: MailFolderId,
+  limit: number
+): Promise<EmailSummary[]> {
+  const total = client.mailbox?.exists ?? 0;
+  if (total === 0) return [];
+
+  const scanSize = Math.min(total, 500);
+  const start = Math.max(1, total - scanSize + 1);
+  const emails: EmailSummary[] = [];
+
+  for await (const message of client.fetch(`${start}:${total}`, {
+    uid: true,
+    envelope: true,
+    flags: true,
+    bodyStructure: true,
+    source: { start: 0, maxLength: 2048 },
+  })) {
+    if (message.flags?.has("\\Seen")) continue;
+    emails.push(await buildSummaryFromMessage(account, folderId, message));
+  }
+
+  return emails
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    .slice(0, limit);
+}
+
+export async function fetchUnreadMailbox(
+  account: AccountWithPassword,
+  folderId: MailFolderId,
+  limit = 50
+): Promise<EmailSummary[]> {
+  return withMailbox(account, folderId, async (client) => {
+    const uids = await searchUnseenUids(client);
+
+    if (uids.length === 0) {
+      const path = client.mailbox?.path;
+      if (path) {
+        try {
+          const status = await client.status(path, { unseen: true });
+          if ((status.unseen ?? 0) > 0) {
+            return fetchUnreadFromFlagsScan(client, account, folderId, limit);
+          }
+        } catch {
+          return fetchUnreadFromFlagsScan(client, account, folderId, limit);
+        }
+      }
+      return [];
+    }
+
+    const targetUids =
+      uids.length > limit ? uids.slice(uids.length - limit) : uids;
+    const emails: EmailSummary[] = [];
+    const range = targetUids.join(",");
+
+    for await (const message of client.fetch(
+      range,
+      {
+        uid: true,
+        envelope: true,
+        flags: true,
+        bodyStructure: true,
+        source: { start: 0, maxLength: 2048 },
+      },
+      { uid: true }
+    )) {
+      emails.push(await buildSummaryFromMessage(account, folderId, message));
+    }
+
+    return emails.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    );
+  });
+}
+
 const SEARCH_RESULT_LIMIT = 100;
 
 function buildSearchQuery(query: string): SearchObject {
@@ -308,6 +397,65 @@ export async function searchAllMailboxes(
     .slice(0, limit);
 }
 
+async function buildEmailDetailFromMessage(
+  account: AccountWithPassword,
+  folderId: MailFolderId,
+  message: {
+    uid: number;
+    envelope?: {
+      subject?: string | null;
+      from?: { name?: string | null; address?: string | null }[] | null;
+      to?: { name?: string | null; address?: string | null }[] | null;
+      date?: Date | null;
+    };
+    flags?: Set<string>;
+    source?: Buffer;
+    bodyStructure?: BodyStructureNode;
+  },
+  seen: boolean
+): Promise<EmailDetail | null> {
+  if (!message.source) return null;
+
+  const parsed = await simpleParser(message.source);
+  const isSent = folderId === "sent";
+  const fromStr = isSent
+    ? formatAddressList(message.envelope?.to) || "Неизвестный"
+    : formatAddress(message.envelope?.from?.[0]);
+
+  const toList = formatAddressList(message.envelope?.to);
+
+  let attachments = collectAttachmentsFromStructure(
+    message.bodyStructure as BodyStructureNode | undefined
+  );
+
+  if (attachments.length === 0 && parsed.attachments?.length) {
+    attachments = mergeParsedAttachments(
+      parsed.attachments,
+      message.bodyStructure as BodyStructureNode | undefined
+    );
+  }
+
+  return {
+    uid: message.uid,
+    accountId: account.id,
+    accountEmail: account.email,
+    accountName: account.name,
+    accountColor: account.color,
+    subject: message.envelope?.subject || "(без темы)",
+    from: isSent ? fromStr : formatAddress(message.envelope?.from?.[0]),
+    to: toList,
+    date: message.envelope?.date?.toISOString() || new Date().toISOString(),
+    seen,
+    answered: message.flags?.has("\\Answered") ?? false,
+    hasAttachments: attachments.length > 0,
+    attachments,
+    snippet: (parsed.text || "").slice(0, 160),
+    text: parsed.text || undefined,
+    html: parsed.html || undefined,
+    folder: folderId,
+  };
+}
+
 export async function fetchEmail(
   account: AccountWithPassword,
   folderId: MailFolderId,
@@ -323,48 +471,52 @@ export async function fetchEmail(
 
     if (!message || !message.source) return null;
 
-    if (markAsRead && !message.flags?.has("\\Seen")) {
+    const wasSeen = message.flags?.has("\\Seen") ?? false;
+    if (markAsRead && !wasSeen) {
       await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
     }
 
-    const parsed = await simpleParser(message.source);
-    const isSent = folderId === "sent";
-    const fromStr = isSent
-      ? formatAddressList(message.envelope?.to) || "Неизвестный"
-      : formatAddress(message.envelope?.from?.[0]);
-
-    const toList = formatAddressList(message.envelope?.to);
-
-    let attachments = collectAttachmentsFromStructure(
-      message.bodyStructure as BodyStructureNode | undefined
+    return buildEmailDetailFromMessage(
+      account,
+      folderId,
+      message,
+      markAsRead ? true : wasSeen
     );
+  });
+}
 
-    if (attachments.length === 0 && parsed.attachments?.length) {
-      attachments = mergeParsedAttachments(
-        parsed.attachments,
-        message.bodyStructure as BodyStructureNode | undefined
+export async function fetchEmailsBatch(
+  account: AccountWithPassword,
+  folderId: MailFolderId,
+  uids: number[]
+): Promise<EmailDetail[]> {
+  if (uids.length === 0) return [];
+
+  return withMailbox(account, folderId, async (client) => {
+    const emails: EmailDetail[] = [];
+    const range = uids.join(",");
+
+    for await (const message of client.fetch(
+      range,
+      {
+        uid: true,
+        envelope: true,
+        flags: true,
+        bodyStructure: true,
+        source: true,
+      },
+      { uid: true }
+    )) {
+      const detail = await buildEmailDetailFromMessage(
+        account,
+        folderId,
+        message,
+        message.flags?.has("\\Seen") ?? false
       );
+      if (detail) emails.push(detail);
     }
 
-    return {
-      uid: message.uid,
-      accountId: account.id,
-      accountEmail: account.email,
-      accountName: account.name,
-      accountColor: account.color,
-      subject: message.envelope?.subject || "(без темы)",
-      from: isSent ? fromStr : formatAddress(message.envelope?.from?.[0]),
-      to: toList,
-      date: message.envelope?.date?.toISOString() || new Date().toISOString(),
-      seen: markAsRead ? true : (message.flags?.has("\\Seen") ?? false),
-      answered: message.flags?.has("\\Answered") ?? false,
-      hasAttachments: attachments.length > 0,
-      attachments,
-      snippet: (parsed.text || "").slice(0, 160),
-      text: parsed.text || undefined,
-      html: parsed.html || undefined,
-      folder: folderId,
-    };
+    return emails;
   });
 }
 

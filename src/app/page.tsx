@@ -21,7 +21,15 @@ import {
   replySubject,
 } from "@/lib/email-utils";
 import { getFolderLabel, EMPTY_UNREAD_COUNTS, type MailFolderId } from "@/lib/folders";
+import { emailDetailKey, summaryToPartialDetail } from "@/lib/email-detail-utils";
 import type { EmailDetail, EmailSummary, MailAccount, MailLabel } from "@/lib/types";
+
+function normalizeErrors(items: unknown): string[] {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean);
+}
 
 const emptyDraft = (accountId: string, accounts: MailAccount[]): ComposeDraft => {
   const account = accounts.find((item) => item.id === accountId);
@@ -60,12 +68,15 @@ export default function HomePage() {
   const [selectedLabelId, setSelectedLabelId] = useState<string | null>(null);
   const [emailFilter, setEmailFilter] = useState<EmailListFilter>("all");
   const [filterLabelId, setFilterLabelId] = useState<string | null>(null);
+  const [unreadListMode, setUnreadListMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSearch, setActiveSearch] = useState("");
   const activeSearchRef = useRef(activeSearch);
   activeSearchRef.current = activeSearch;
   const countsRefreshTimer = useRef<number | null>(null);
   const loadEmailsRequestId = useRef(0);
+  const detailCacheRef = useRef<Map<string, EmailDetail>>(new Map());
+  const prefetchInFlightRef = useRef<Set<string>>(new Set());
 
   const loadLabelUnreadCounts = useCallback(async (accountId?: string | null) => {
     try {
@@ -142,12 +153,16 @@ export default function HomePage() {
       accountId?: string | null,
       folder: MailFolderId = "inbox",
       labelId?: string | null,
-      search?: string | null
+      search?: string | null,
+      unreadOnly = false
     ) => {
       const requestId = ++loadEmailsRequestId.current;
+      const q = (search ?? activeSearchRef.current).trim();
       setLoading(true);
       setErrors([]);
-      const q = (search ?? activeSearchRef.current).trim();
+      if (!q && !labelId) {
+        setUnreadListMode(unreadOnly);
+      }
       try {
         if (q) {
           const params = new URLSearchParams({ q });
@@ -159,7 +174,7 @@ export default function HomePage() {
             setEmails(data);
           } else {
             setEmails(data.emails || []);
-            setErrors(data.errors || []);
+            setErrors(normalizeErrors(data.errors));
           }
         } else if (labelId) {
           const params = new URLSearchParams();
@@ -179,6 +194,7 @@ export default function HomePage() {
         } else {
           const params = new URLSearchParams({ folder });
           if (accountId) params.set("accountId", accountId);
+          if (unreadOnly) params.set("unreadOnly", "1");
           const res = await fetch(`/api/emails?${params}`);
           const data = await res.json();
           if (requestId !== loadEmailsRequestId.current) return;
@@ -186,7 +202,7 @@ export default function HomePage() {
             setEmails(data);
           } else {
             setEmails(data.emails || []);
-            setErrors(data.errors || []);
+            setErrors(normalizeErrors(data.errors));
           }
         }
       } catch {
@@ -205,18 +221,20 @@ export default function HomePage() {
   const refreshList = useCallback(
     async (accountId?: string | null, refreshCounts = true) => {
       const acc = accountId !== undefined ? accountId : selectedAccountId;
+      const unreadOnly =
+        emailFilter === "unread" && !activeSearchRef.current && !selectedLabelId;
       if (activeSearchRef.current) {
         await loadEmails(acc, selectedFolder, selectedLabelId, activeSearchRef.current);
       } else if (selectedLabelId) {
         await loadEmails(acc, selectedFolder, selectedLabelId);
       } else {
-        await loadEmails(acc, selectedFolder);
+        await loadEmails(acc, selectedFolder, null, null, unreadOnly);
       }
       if (refreshCounts) {
         refreshSidebarCounts(acc);
       }
     },
-    [loadEmails, selectedAccountId, selectedFolder, selectedLabelId, refreshSidebarCounts]
+    [loadEmails, selectedAccountId, selectedFolder, selectedLabelId, refreshSidebarCounts, emailFilter]
   );
 
   useEffect(() => {
@@ -235,6 +253,18 @@ export default function HomePage() {
     // Только при первом открытии приложения
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (emailFilter !== "unread" || activeSearch || selectedLabelId) return;
+    loadEmails(selectedAccountId, selectedFolder, null, null, true);
+  }, [
+    emailFilter,
+    selectedFolder,
+    selectedAccountId,
+    selectedLabelId,
+    activeSearch,
+    loadEmails,
+  ]);
 
   const handleSearch = () => {
     const q = searchQuery.trim();
@@ -267,17 +297,20 @@ export default function HomePage() {
       selectedAccountId,
       selectedFolder,
       selectedLabelId || undefined,
-      email
+      email,
+      emailFilter === "unread" && !selectedLabelId
     );
   };
 
   const handleSelectFolder = (folder: MailFolderId) => {
+    detailCacheRef.current.clear();
+    prefetchInFlightRef.current.clear();
     setSelectedFolder(folder);
     setSelectedLabelId(null);
     setSelectedEmail(null);
     setActiveSearch("");
     setSearchQuery("");
-    loadEmails(selectedAccountId, folder);
+    loadEmails(selectedAccountId, folder, null, null, emailFilter === "unread");
   };
 
   const handleSelectLabel = (labelId: string) => {
@@ -289,6 +322,8 @@ export default function HomePage() {
   };
 
   const handleSelectAccount = (id: string | null) => {
+    detailCacheRef.current.clear();
+    prefetchInFlightRef.current.clear();
     setSelectedAccountId(id);
     setSelectedEmail(null);
     setActiveSearch("");
@@ -296,50 +331,145 @@ export default function HomePage() {
     if (selectedLabelId) {
       loadEmails(id, selectedFolder, selectedLabelId);
     } else {
-      loadEmails(id, selectedFolder);
+      loadEmails(id, selectedFolder, null, null, emailFilter === "unread");
     }
     refreshSidebarCounts(id);
   };
 
-  const handleSelectEmail = async (summary: EmailSummary) => {
-    const wasUnread = !summary.seen;
-    setLoadingEmail(true);
-    try {
-      const folder = (summary.folder as MailFolderId) || selectedFolder;
-      const res = await fetch(
-        `/api/emails?accountId=${summary.accountId}&uid=${summary.uid}&folder=${folder}`
-      );
-      const data = await res.json();
-      setSelectedEmail(data);
+  const getEmailFolder = (email: EmailSummary): MailFolderId =>
+    (email.folder as MailFolderId) || selectedFolder;
+
+  const storeDetailInCache = useCallback((detail: EmailDetail, folder: MailFolderId) => {
+    detailCacheRef.current.set(emailDetailKey(detail, folder), detail);
+  }, []);
+
+  const prefetchEmailDetails = useCallback(
+    async (summaries: EmailSummary[]) => {
+      const items = summaries
+        .map((summary) => {
+          const folder = getEmailFolder(summary);
+          const key = emailDetailKey(summary, folder);
+          if (
+            detailCacheRef.current.has(key) ||
+            prefetchInFlightRef.current.has(key)
+          ) {
+            return null;
+          }
+          prefetchInFlightRef.current.add(key);
+          return {
+            accountId: summary.accountId,
+            folder,
+            uid: summary.uid,
+            key,
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null)
+        .slice(0, 12);
+
+      if (items.length === 0) return;
+
+      try {
+        const res = await fetch("/api/emails/prefetch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: items.map(({ accountId, folder, uid }) => ({
+              accountId,
+              folder,
+              uid,
+            })),
+          }),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        for (const detail of (data.emails ?? []) as EmailDetail[]) {
+          const folder = (detail.folder as MailFolderId) || selectedFolder;
+          storeDetailInCache(detail, folder);
+        }
+      } catch {
+        /* фоновая предзагрузка */
+      } finally {
+        for (const item of items) {
+          prefetchInFlightRef.current.delete(item.key);
+        }
+      }
+    },
+    [selectedFolder, storeDetailInCache]
+  );
+
+  const applyOpenedEmail = useCallback(
+    (summary: EmailSummary, detail: EmailDetail, folder: MailFolderId, wasUnread: boolean) => {
+      setSelectedEmail(detail);
       setEmails((prev) =>
         prev.map((e) =>
           e.accountId === summary.accountId && e.uid === summary.uid
             ? {
                 ...e,
                 seen: true,
-                hasAttachments: data.hasAttachments,
-                answered: data.answered,
+                hasAttachments: detail.hasAttachments,
+                answered: detail.answered,
               }
             : e
         )
       );
       if (wasUnread) {
-        const folderKey = (summary.folder as MailFolderId) || selectedFolder;
         setUnreadCounts((prev) => ({
           ...prev,
-          [folderKey]: Math.max(0, (prev[folderKey] ?? 0) - 1),
+          [folder]: Math.max(0, (prev[folder] ?? 0) - 1),
         }));
         scheduleSidebarCounts(selectedAccountId);
       }
+    },
+    [scheduleSidebarCounts, selectedAccountId]
+  );
+
+  const handleSelectEmail = async (summary: EmailSummary) => {
+    const wasUnread = !summary.seen;
+    const folder = getEmailFolder(summary);
+    const key = emailDetailKey(summary, folder);
+    const cached = detailCacheRef.current.get(key);
+
+    if (cached) {
+      const detail = wasUnread ? { ...cached, seen: true } : cached;
+      storeDetailInCache(detail, folder);
+      applyOpenedEmail(summary, detail, folder, wasUnread);
+      setLoadingEmail(false);
+
+      if (wasUnread) {
+        fetch(
+          `/api/emails?accountId=${summary.accountId}&uid=${summary.uid}&folder=${folder}`
+        )
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data: EmailDetail | null) => {
+            if (!data) return;
+            storeDetailInCache(data, folder);
+            setSelectedEmail(data);
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    setSelectedEmail(summaryToPartialDetail(summary, folder));
+    setLoadingEmail(true);
+
+    try {
+      const res = await fetch(
+        `/api/emails?accountId=${summary.accountId}&uid=${summary.uid}&folder=${folder}`
+      );
+      if (!res.ok) {
+        setSelectedEmail(null);
+        return;
+      }
+      const data = (await res.json()) as EmailDetail;
+      storeDetailInCache(data, folder);
+      applyOpenedEmail(summary, data, folder, wasUnread);
     } catch {
       setSelectedEmail(null);
     } finally {
       setLoadingEmail(false);
     }
   };
-
-  const getEmailFolder = (email: EmailSummary): MailFolderId =>
-    (email.folder as MailFolderId) || selectedFolder;
 
   const listFolderForDisplay: MailFolderId = selectedLabelId
     ? "inbox"
@@ -348,11 +478,54 @@ export default function HomePage() {
   const isSameEmail = (a: EmailSummary, b: EmailSummary) =>
     a.accountId === b.accountId && a.uid === b.uid;
 
+  const patchEmailSeen = (email: EmailSummary, seen: boolean) => {
+    setEmails((prev) =>
+      prev.map((e) =>
+        e.accountId === email.accountId && e.uid === email.uid ? { ...e, seen } : e
+      )
+    );
+    setSelectedEmail((prev) =>
+      prev && prev.accountId === email.accountId && prev.uid === email.uid
+        ? { ...prev, seen }
+        : prev
+    );
+    setContextMenu((prev) =>
+      prev &&
+      prev.email.accountId === email.accountId &&
+      prev.email.uid === email.uid
+        ? { ...prev, email: { ...prev.email, seen } }
+        : prev
+    );
+  };
+
+  const patchFolderUnreadCount = (
+    folder: MailFolderId,
+    wasSeen: boolean,
+    nowSeen: boolean
+  ) => {
+    if (wasSeen === nowSeen) return;
+    const delta = nowSeen ? -1 : 1;
+    setUnreadCounts((prev) => ({
+      ...prev,
+      [folder]: Math.max(0, (prev[folder] ?? 0) + delta),
+    }));
+  };
+
   const runActionOnEmail = async (
     email: EmailSummary,
     action: "markRead" | "markUnread" | "delete" | "archive" | "spam"
   ) => {
     const folder = getEmailFolder(email);
+    const isSeenAction = action === "markRead" || action === "markUnread";
+    const wasSeen = email.seen;
+    const nextSeen =
+      action === "markRead" ? true : action === "markUnread" ? false : wasSeen;
+
+    if (isSeenAction) {
+      patchEmailSeen(email, nextSeen);
+      patchFolderUnreadCount(folder, wasSeen, nextSeen);
+    }
+
     const res = await fetch("/api/emails/actions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -363,25 +536,32 @@ export default function HomePage() {
         folder,
       }),
     });
+
     if (!res.ok) {
       const data = await res.json();
+      if (isSeenAction) {
+        patchEmailSeen(email, wasSeen);
+        patchFolderUnreadCount(folder, nextSeen, wasSeen);
+      }
       setErrors([data.error || "Не удалось выполнить действие"]);
       return false;
     }
 
-    const removesFromList = action === "delete" || action === "archive" || action === "spam";
+    const removesFromList =
+      action === "delete" || action === "archive" || action === "spam";
+
     if (
       selectedEmail &&
       selectedEmail.accountId === email.accountId &&
-      selectedEmail.uid === email.uid
+      selectedEmail.uid === email.uid &&
+      removesFromList
     ) {
-      if (removesFromList) {
-        setSelectedEmail(null);
-      } else if (action === "markUnread") {
-        setSelectedEmail({ ...selectedEmail, seen: false });
-      } else if (action === "markRead") {
-        setSelectedEmail({ ...selectedEmail, seen: true });
-      }
+      setSelectedEmail(null);
+    }
+
+    if (isSeenAction) {
+      scheduleSidebarCounts(selectedAccountId);
+      return true;
     }
 
     await refreshList();
@@ -390,11 +570,17 @@ export default function HomePage() {
 
   const fetchEmailDetail = async (summary: EmailSummary): Promise<EmailDetail | null> => {
     const folder = getEmailFolder(summary);
+    const key = emailDetailKey(summary, folder);
+    const cached = detailCacheRef.current.get(key);
+    if (cached) return cached;
+
     const res = await fetch(
       `/api/emails?accountId=${summary.accountId}&uid=${summary.uid}&folder=${folder}`
     );
     if (!res.ok) return null;
-    return res.json();
+    const data = (await res.json()) as EmailDetail;
+    storeDetailInCache(data, folder);
+    return data;
   };
 
   const handleReplyToEmail = async (summary: EmailSummary) => {
@@ -504,11 +690,12 @@ export default function HomePage() {
     action: "markRead" | "markUnread" | "delete" | "archive"
   ) => {
     if (!selectedEmail) return;
-    setActionLoading(true);
+    const isSeenAction = action === "markRead" || action === "markUnread";
+    if (!isSeenAction) setActionLoading(true);
     try {
       await runActionOnEmail({ ...selectedEmail }, action);
     } finally {
-      setActionLoading(false);
+      if (!isSeenAction) setActionLoading(false);
     }
   };
 
@@ -625,12 +812,38 @@ export default function HomePage() {
     }
   }, [emails, emailFilter, filterLabelId]);
 
+  useEffect(() => {
+    if (loading || emails.length === 0) return;
+    prefetchEmailDetails(emails.slice(0, 10));
+  }, [emails, loading, prefetchEmailDetails]);
+
+  useEffect(() => {
+    if (!selectedEmail) return;
+    const idx = filteredEmails.findIndex(
+      (e) =>
+        e.accountId === selectedEmail.accountId && e.uid === selectedEmail.uid
+    );
+    if (idx === -1) return;
+    const neighbors = [
+      filteredEmails[idx - 1],
+      filteredEmails[idx + 1],
+      filteredEmails[idx + 2],
+    ].filter(Boolean) as EmailSummary[];
+    prefetchEmailDetails(neighbors);
+  }, [selectedEmail, filteredEmails, prefetchEmailDetails]);
+
   const listEmptyMessage =
     !loading && emails.length === 0 && activeSearch
       ? `Ничего не найдено по запросу «${activeSearch}»`
-      : !loading && emails.length > 0 && filteredEmails.length === 0
-        ? "Нет писем по выбранному фильтру"
-        : undefined;
+      : !loading &&
+          emailFilter === "unread" &&
+          unreadListMode &&
+          emails.length === 0 &&
+          (unreadCounts[selectedFolder] ?? 0) > 0
+        ? "Не удалось загрузить непрочитанные письма. Попробуйте обновить список."
+        : !loading && emails.length > 0 && filteredEmails.length === 0
+          ? "Нет писем по выбранному фильтру"
+          : undefined;
 
   const panelTitle = activeSearch
     ? `Поиск: ${activeSearch}`
@@ -676,8 +889,18 @@ export default function HomePage() {
               labels={labels}
               disabled={loading}
               onChange={(next, labelId) => {
+                const wasUnread = emailFilter === "unread";
                 setEmailFilter(next);
-                setFilterLabelId(next === "label" ? (labelId ?? null) : null);
+                const nextLabelId = next === "label" ? (labelId ?? null) : null;
+                setFilterLabelId(nextLabelId);
+                if (activeSearch) return;
+                if (wasUnread && next !== "unread") {
+                  loadEmails(
+                    selectedAccountId,
+                    selectedFolder,
+                    nextLabelId ?? selectedLabelId
+                  );
+                }
               }}
             />
           )}

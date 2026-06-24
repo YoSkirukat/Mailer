@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { PeerAvatar } from "@/components/PeerAvatar";
 import { parseEmailAddress } from "@/lib/email-utils";
 
 const iconStroke = {
@@ -10,36 +11,6 @@ const iconStroke = {
   strokeLinecap: "round" as const,
   strokeLinejoin: "round" as const,
 };
-
-const AVATAR_BACKGROUNDS = [
-  "#fce7f3",
-  "#dbeafe",
-  "#dcfce7",
-  "#fef3c7",
-  "#ede9fe",
-  "#ffedd5",
-  "#e0f2fe",
-];
-
-const AVATAR_FOREGROUNDS = [
-  "#be185d",
-  "#1d4ed8",
-  "#15803d",
-  "#b45309",
-  "#6d28d9",
-  "#c2410c",
-  "#0369a1",
-];
-
-function avatarStyle(email: string) {
-  let hash = 0;
-  for (const char of email) hash = (hash + char.charCodeAt(0)) | 0;
-  const index = Math.abs(hash) % AVATAR_BACKGROUNDS.length;
-  return {
-    background: AVATAR_BACKGROUNDS[index],
-    color: AVATAR_FOREGROUNDS[index],
-  };
-}
 
 function CopyIcon() {
   return (
@@ -144,9 +115,6 @@ export function SenderAddressMenu({
     }
   };
 
-  const avatar = avatarStyle(email);
-  const initial = (name || email).charAt(0).toUpperCase();
-
   return (
     <div className="sender-address-menu" ref={ref}>
       <button
@@ -162,15 +130,7 @@ export function SenderAddressMenu({
       {open && (
         <div className="sender-address-dropdown" role="menu">
           <div className="sender-address-dropdown-header">
-            <div
-              className="sender-address-avatar"
-              style={{
-                backgroundColor: avatar.background,
-                color: avatar.color,
-              }}
-            >
-              {initial}
-            </div>
+            <PeerAvatar address={address} size="menu" />
             <div className="sender-address-info">
               <div className="sender-address-name">{name}</div>
               <div className="sender-address-email">{email}</div>

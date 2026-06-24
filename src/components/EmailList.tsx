@@ -6,6 +6,8 @@ import {
   type MailFolderId,
 } from "@/lib/folders";
 import { LabelBadgeList } from "@/components/LabelBadge";
+import { PeerAvatar } from "@/components/PeerAvatar";
+import { formatPeerDisplayName } from "@/lib/email-utils";
 import type { EmailSummary } from "@/lib/types";
 
 interface EmailListProps {
@@ -113,37 +115,41 @@ export function EmailList({
             onClick={() => onSelect(email)}
             onContextMenu={(e) => onContextMenu(email, e)}
           >
-            <div className="email-item-status">
-              {isUnread ? (
-                <span
-                  className="read-status-dot read-status-dot--unread"
-                  aria-label="Непрочитано"
-                />
-              ) : isReplied ? (
-                <span
-                  className="replied-indicator"
-                  title="Есть ответ"
-                  aria-label="Есть ответ"
-                >
-                  <RepliedIcon />
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  className="read-status-dot read-status-dot--read"
-                  title="Пометить непрочитанным"
-                  aria-label="Пометить непрочитанным"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onMarkUnread(email);
-                  }}
-                />
-              )}
+            <div className="email-item-leading">
+              <div className="email-item-status">
+                {isUnread ? (
+                  <span
+                    className="read-status-dot read-status-dot--unread"
+                    aria-label="Непрочитано"
+                  />
+                ) : isReplied ? (
+                  <span
+                    className="replied-indicator"
+                    title="Есть ответ"
+                    aria-label="Есть ответ"
+                  >
+                    <RepliedIcon />
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="read-status-dot read-status-dot--read"
+                    title="Пометить непрочитанным"
+                    aria-label="Пометить непрочитанным"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMarkUnread(email);
+                    }}
+                  />
+                )}
+              </div>
+              <PeerAvatar address={email.from} />
             </div>
             <div className="email-item-body">
               <div className="top-row">
                 <span className="from">
-                  <span className="peer-label">{peerLabel}:</span> {email.from}
+                  <span className="peer-label">{peerLabel}:</span>{" "}
+                  {formatPeerDisplayName(email.from)}
                 </span>
                 <span className="date">{formatDate(email.date)}</span>
               </div>

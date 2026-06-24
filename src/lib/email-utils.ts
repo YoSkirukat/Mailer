@@ -24,6 +24,16 @@ export function parseEmailAddress(value: string): {
   return { name: trimmed, email: trimmed };
 }
 
+/** Имя отправителя/получателя без email — для списка писем */
+export function formatPeerDisplayName(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  return trimmed
+    .split(/,\s*/)
+    .map((part) => parseEmailAddress(part).name)
+    .join(", ");
+}
+
 export function replySubject(subject: string): string {
   if (/^re:\s/i.test(subject)) return subject;
   return `Re: ${subject}`;

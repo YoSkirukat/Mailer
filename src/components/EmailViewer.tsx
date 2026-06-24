@@ -48,14 +48,6 @@ function ForwardIcon() {
   );
 }
 
-function UnreadIcon() {
-  return (
-    <svg width={18} height={18} viewBox="0 0 24 24" aria-hidden>
-      <circle {...iconStroke} cx="12" cy="12" r="5" />
-    </svg>
-  );
-}
-
 function PaperclipIcon() {
   return (
     <svg width={16} height={16} viewBox="0 0 24 24" aria-hidden>
@@ -98,7 +90,8 @@ export function EmailViewer({
   onAction,
   onComposeTo,
   onSearchFrom,
-}: EmailViewerProps) {  if (loading) {
+}: EmailViewerProps) {
+  if (loading && !email) {
     return (
       <div className="email-viewer">
         <div className="empty">Загрузка письма…</div>
@@ -116,6 +109,7 @@ export function EmailViewer({
 
   const emailFolder = (email.folder as MailFolderId) || folder;
   const inArchive = emailFolder === "archive";
+  const bodyLoading = loading && !email.html;
 
   return (
     <div className="email-viewer">
@@ -163,34 +157,32 @@ export function EmailViewer({
           <ForwardIcon />
           <span>Переслать</span>
         </button>
-        {email.seen ? (
-          <button
-            type="button"
-            className="toolbar-btn"
-            onClick={() => onAction("markUnread")}
-            disabled={actionLoading}
-            title="Пометить непрочитанным"
-          >
-            <UnreadIcon />
-            <span>Не прочитано</span>
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="toolbar-btn"
-            onClick={() => onAction("markRead")}
-            disabled={actionLoading}
-            title="Пометить прочитанным"
-          >
-            <UnreadIcon />
-            <span>Прочитано</span>
-          </button>
-        )}
       </div>
 
       <div className="content">
         <div className="meta">
-          <h2>{email.subject}</h2>
+          <div className="email-viewer-subject">
+            {email.seen ? (
+              <button
+                type="button"
+                className="read-status-dot read-status-dot--read"
+                title="Пометить непрочитанным"
+                aria-label="Пометить непрочитанным"
+                onClick={() => onAction("markUnread")}
+                disabled={actionLoading}
+              />
+            ) : (
+              <button
+                type="button"
+                className="read-status-dot read-status-dot--unread"
+                title="Пометить прочитанным"
+                aria-label="Пометить прочитанным"
+                onClick={() => onAction("markRead")}
+                disabled={actionLoading}
+              />
+            )}
+            <h2>{email.subject}</h2>
+          </div>
           <div className="meta-row">
             <strong>{folder === "sent" ? "Кому:" : "От:"}</strong>{" "}
             {folder === "sent" ? (
@@ -292,11 +284,13 @@ export function EmailViewer({
 
         {email.html ? (
           <div
-            className="email-body-html"
+            className={`email-body-html ${bodyLoading ? "email-body-loading" : ""}`}
             dangerouslySetInnerHTML={{ __html: email.html }}
           />
         ) : (
-          <div className="email-body">{email.text || "(пустое письмо)"}</div>
+          <div className={`email-body ${bodyLoading ? "email-body-loading" : ""}`}>
+            {email.text || "(пустое письмо)"}
+          </div>
         )}
       </div>
     </div>

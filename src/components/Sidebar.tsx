@@ -50,7 +50,7 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="sidebar-header">
         <div className="sidebar-brand">
-          <MailerLogo style="flow" className="sidebar-brand-logo" />
+          <MailerLogo className="sidebar-brand-logo" />
         </div>
         <button
           type="button"
@@ -159,7 +159,7 @@ export function Sidebar({
 
       <div className="account-list">
         <button
-          className="account-item"
+          className={`account-item ${selectedAccountId === null ? "active" : ""}`}
           onClick={() => onSelectAccount(null)}
           disabled={accounts.length === 0}
         >
