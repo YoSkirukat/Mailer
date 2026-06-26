@@ -3,6 +3,7 @@
 import type { MailFolderId } from "@/lib/folders";
 import { formatAttachmentSize, isPreviewableAttachment } from "@/lib/attachments";
 import { FolderIcon } from "@/components/FolderIcon";
+import { LabelBadgeList } from "@/components/LabelBadge";
 import { SenderAddressMenu } from "@/components/SenderAddressMenu";
 import type { EmailDetail } from "@/lib/types";
 export type EmailAction =
@@ -196,6 +197,11 @@ export function EmailViewer({
             )}
             <h2>{email.subject}</h2>
           </div>
+          {(email.labels?.length ?? 0) > 0 && (
+            <div className="meta-labels">
+              <LabelBadgeList labels={email.labels ?? []} />
+            </div>
+          )}
           <div className="meta-row">
             <strong>{folder === "sent" ? "Кому:" : "От:"}</strong>{" "}
             {folder === "sent" ? (

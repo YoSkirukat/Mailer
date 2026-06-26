@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { SettingsModal } from "@/components/SettingsModal";
 import { ComposeModal, type ComposeDraft } from "@/components/ComposeModal";
 import { EmailContextMenu, type ContextMenuAction } from "@/components/EmailContextMenu";
@@ -37,6 +37,16 @@ function normalizeErrors(items: unknown): string[] {
   return items
     .map((item) => (typeof item === "string" ? item.trim() : ""))
     .filter(Boolean);
+}
+
+function applyFilterErrors(
+  filterErrors: unknown,
+  setErrorsFn: Dispatch<SetStateAction<string[]>>
+) {
+  const nextErrors = normalizeErrors(filterErrors);
+  if (nextErrors.length > 0) {
+    setErrorsFn((prev) => [...new Set([...prev, ...nextErrors])]);
+  }
 }
 
 const AUTO_REFRESH_MS = 20_000;
@@ -221,6 +231,7 @@ export default function HomePage() {
           if (requestId !== silentLoadRequestId.current) return false;
           if (loadEmailsRequestId.current !== userRequestAtStart) return false;
           setEmails(nextEmails);
+          if (nextErrors?.length) setErrors(nextErrors);
           appliedEmails = nextEmails;
           return true;
         }
@@ -660,10 +671,11 @@ export default function HomePage() {
           `/api/emails?accountId=${summary.accountId}&uid=${summary.uid}&folder=${folder}`
         )
           .then((res) => (res.ok ? res.json() : null))
-          .then((data: EmailDetail | null) => {
+          .then((data: (EmailDetail & { filterErrors?: string[] }) | null) => {
             if (!data) return;
             storeDetailInCache(data, folder);
             setSelectedEmail(data);
+            applyFilterErrors(data.filterErrors, setErrors);
           })
           .catch(() => {});
       }
@@ -681,9 +693,12 @@ export default function HomePage() {
         setSelectedEmail(null);
         return;
       }
-      const data = (await res.json()) as EmailDetail;
+      const data = (await res.json()) as EmailDetail & {
+        filterErrors?: string[];
+      };
       storeDetailInCache(data, folder);
       applyOpenedEmail(summary, data, folder, wasUnread);
+      applyFilterErrors(data.filterErrors, setErrors);
     } catch {
       setSelectedEmail(null);
     } finally {

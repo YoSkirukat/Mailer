@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 import { AccountForm } from "@/components/AccountForm";
+import { FilterSettingsPanel } from "@/components/FilterSettingsPanel";
 import { LABEL_COLORS } from "@/lib/label-colors";
 import type { MailAccount } from "@/lib/types";
 
-type SettingsTab = "mailboxes";
+type SettingsTab = "mailboxes" | "filters";
 type MailboxesView = "list" | "add" | "edit";
 
 interface SettingsModalProps {
@@ -21,10 +22,11 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [tab, setTab] = useState<SettingsTab>("mailboxes");
   const [view, setView] = useState<MailboxesView>("list");
+  const [filtersPanelTitle, setFiltersPanelTitle] = useState("Фильтрация");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [fromName, setFromName] = useState("");
-  const [color, setColor] = useState(LABEL_COLORS[5]);
+  const [color, setColor] = useState<string>(LABEL_COLORS[5]);
   const [signature, setSignature] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -120,17 +122,29 @@ export function SettingsModal({
             >
               Почтовые ящики
             </button>
+            <button
+              type="button"
+              className={`settings-tab ${tab === "filters" ? "active" : ""}`}
+              onClick={() => {
+                setTab("filters");
+                resetEditForm();
+              }}
+            >
+              Фильтрация
+            </button>
           </nav>
         </aside>
 
         <section className="settings-panel">
           <div className="settings-panel-header">
             <h3>
-              {view === "add"
-                ? "Добавить ящик"
-                : view === "edit"
-                  ? "Редактировать ящик"
-                  : "Почтовые ящики"}
+              {tab === "filters"
+                ? filtersPanelTitle
+                : view === "add"
+                  ? "Добавить ящик"
+                  : view === "edit"
+                    ? "Редактировать ящик"
+                    : "Почтовые ящики"}
             </h3>
             <button
               type="button"
@@ -142,8 +156,12 @@ export function SettingsModal({
             </button>
           </div>
 
-          {error && view !== "add" && (
+          {error && tab === "mailboxes" && view !== "add" && (
             <div className="error-banner settings-error">{error}</div>
+          )}
+
+          {tab === "filters" && (
+            <FilterSettingsPanel onTitleChange={setFiltersPanelTitle} />
           )}
 
           {tab === "mailboxes" && view === "list" && (

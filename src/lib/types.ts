@@ -10,6 +10,51 @@ export interface MailLabelInput {
   color: string;
 }
 
+export type FilterMatchMode = "all" | "any" | "all_messages";
+
+export type FilterRuleField = "from" | "to" | "subject" | "body";
+
+export type FilterRuleOperator = "contains" | "not_contains" | "equals";
+
+export type FilterActionType =
+  | "move_to"
+  | "delete"
+  | "mark_read"
+  | "forward_to"
+  | "set_label";
+
+export interface MailFilterRule {
+  id: string;
+  field: FilterRuleField;
+  operator: FilterRuleOperator;
+  value: string;
+}
+
+export interface MailFilterAction {
+  id: string;
+  type: FilterActionType;
+  value: string;
+}
+
+export interface MailFilter {
+  id: string;
+  name: string;
+  enabled: boolean;
+  matchMode: FilterMatchMode;
+  rules: MailFilterRule[];
+  actions: MailFilterAction[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MailFilterInput {
+  name: string;
+  enabled: boolean;
+  matchMode: FilterMatchMode;
+  rules: Omit<MailFilterRule, "id">[];
+  actions: Omit<MailFilterAction, "id">[];
+}
+
 export interface MailAccount {
   id: string;
   name: string;

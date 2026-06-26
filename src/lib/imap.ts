@@ -288,7 +288,8 @@ export async function fetchMailbox(
   limit = 50
 ): Promise<EmailSummary[]> {
   return withMailbox(account, folderId, async (client) => {
-    const total = client.mailbox?.exists ?? 0;
+    const mbox = client.mailbox;
+    const total = mbox === false ? 0 : mbox.exists ?? 0;
     if (total === 0) return [];
 
     const start = Math.max(1, total - limit + 1);
@@ -329,7 +330,8 @@ async function fetchUnreadFromFlagsScan(
   folderId: MailFolderId,
   limit: number
 ): Promise<EmailSummary[]> {
-  const total = client.mailbox?.exists ?? 0;
+  const mbox = client.mailbox;
+  const total = mbox === false ? 0 : mbox.exists ?? 0;
   if (total === 0) return [];
 
   const scanSize = Math.min(total, 500);
@@ -361,7 +363,8 @@ export async function fetchUnreadMailbox(
     const uids = await searchUnseenUids(client);
 
     if (uids.length === 0) {
-      const path = client.mailbox?.path;
+      const currentMbox = client.mailbox;
+      const path = currentMbox === false ? undefined : currentMbox.path;
       if (path) {
         try {
           const status = await client.status(path, { unseen: true });
@@ -817,7 +820,7 @@ async function readPartBuffer(
 ): Promise<{ content: Buffer; filename?: string; contentType?: string } | null> {
   try {
     const downloaded = await client.downloadMany(uid, [partId], { uid: true });
-    if (downloaded && !("response" in downloaded && downloaded.response === false)) {
+    if (downloaded) {
       const entry = downloaded[partId];
       if (entry?.content?.length) {
         return {

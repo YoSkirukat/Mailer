@@ -29,8 +29,11 @@ export async function POST(request: Request) {
     const testAccount = {
       id: "test",
       name: body.name.trim(),
+      fromName: "",
       email: body.email.trim().toLowerCase(),
       password: body.password,
+      color: "#3b82f6",
+      signature: "",
       imapHost: body.imapHost.trim(),
       imapPort: body.imapPort,
       smtpHost: body.smtpHost.trim(),

@@ -7,6 +7,8 @@ import {
 } from "@/lib/email-detail-cache";
 import { isValidFolderId } from "@/lib/folders";
 import { attachAllLabelsToEmails, attachLabelsToEmails, getLabelsForEmail } from "@/lib/labels-db";
+import { applyMailFilters, applyMailFiltersForUid } from "@/lib/filter-engine";
+import { listEnabledMailFilters } from "@/lib/filters-db";
 import { fetchEmail, fetchMailbox, fetchUnreadMailbox, formatImapErrorMessage, searchAllMailboxes, setEmailSeen } from "@/lib/imap";
 import type { EmailSummary } from "@/lib/types";
 export async function GET(request: Request) {
@@ -23,6 +25,18 @@ export async function GET(request: Request) {
       const account = getAccountWithPassword(accountId);
       if (!account) {
         return NextResponse.json({ error: "Аккаунт не найден" }, { status: 404 });
+      }
+
+      const filters = listEnabledMailFilters();
+      let filterErrors: string[] = [];
+      if (folder === "inbox" && filters.length > 0) {
+        const filterResult = await applyMailFiltersForUid(
+          account,
+          folder,
+          Number(uid),
+          filters
+        );
+        filterErrors = filterResult.errors;
       }
 
       const cacheKey = emailDetailCacheKey(accountId, folder, Number(uid));
@@ -47,7 +61,11 @@ export async function GET(request: Request) {
         folder,
         uid: Number(uid),
       });
-      return NextResponse.json({ ...email, labels });
+      return NextResponse.json({
+        ...email,
+        labels,
+        filterErrors,
+      });
     }
 
     const accounts = accountId
@@ -61,14 +79,31 @@ export async function GET(request: Request) {
     const batches = await Promise.allSettled(
       accounts.map(async (acc) => {
         const full = getAccountWithPassword(acc.id);
-        if (!full) return [] as EmailSummary[];
+        if (!full) return { emails: [] as EmailSummary[], errors: [] as string[] };
         if (query) {
-          return searchAllMailboxes(full, query);
+          return {
+            emails: await searchAllMailboxes(full, query),
+            errors: [] as string[],
+          };
         }
         if (unreadOnly) {
-          return fetchUnreadMailbox(full, folder, 50);
+          const emails = await fetchUnreadMailbox(full, folder, 50);
+          if (folder === "inbox") {
+            const filters = listEnabledMailFilters();
+            if (filters.length > 0) {
+              return applyMailFilters(full, folder, emails, filters);
+            }
+          }
+          return { emails, errors: [] as string[] };
         }
-        return fetchMailbox(full, folder, 30);
+        const emails = await fetchMailbox(full, folder, 30);
+        if (folder === "inbox" && !query) {
+          const filters = listEnabledMailFilters();
+          if (filters.length > 0) {
+            return applyMailFilters(full, folder, emails, filters);
+          }
+        }
+        return { emails, errors: [] as string[] };
       })
     );
 
@@ -77,7 +112,10 @@ export async function GET(request: Request) {
 
     batches.forEach((result, index) => {
       if (result.status === "fulfilled") {
-        emails.push(...result.value);
+        emails.push(...result.value.emails);
+        if (result.value.errors.length > 0) {
+          errors.push(...result.value.errors);
+        }
         return;
       }
 

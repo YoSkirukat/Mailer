@@ -16,7 +16,7 @@ export function LabelManagerModal({
   onChange,
 }: LabelManagerModalProps) {
   const [name, setName] = useState("");
-  const [color, setColor] = useState(DEFAULT_LABEL_COLOR);
+  const [color, setColor] = useState<string>(DEFAULT_LABEL_COLOR);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);

@@ -23,10 +23,10 @@ function createTransporter(account: AccountWithPassword) {
 export async function sendMail(
   account: AccountWithPassword,
   input: SendMailInput
-): Promise<void> {
+) {
   const transporter = createTransporter(account);
 
-  await transporter.sendMail({
+  const info = await transporter.sendMail({
     from: {
       name: (account.fromName || account.name).trim(),
       address: account.email,
@@ -34,8 +34,14 @@ export async function sendMail(
     to: input.to,
     subject: input.subject,
     text: input.text,
-    html: input.html,
+    ...(input.html ? { html: input.html } : {}),
   });
+
+  if (!info.messageId) {
+    throw new Error("SMTP-сервер не подтвердил отправку письма");
+  }
+
+  return info;
 }
 
 export async function testSmtpConnection(

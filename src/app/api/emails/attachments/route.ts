@@ -54,7 +54,7 @@ export async function GET(request: Request) {
           ? false
           : isPreviewableAttachment(file.contentType, file.filename);
 
-    return new NextResponse(file.content, {
+    return new NextResponse(new Uint8Array(file.content), {
       headers: {
         "Content-Type": file.contentType,
         "Content-Disposition": contentDispositionFilename(file.filename, inline),

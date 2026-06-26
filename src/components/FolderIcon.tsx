@@ -1,4 +1,4 @@
-import type { MailFolderId } from "./folders";
+import type { MailFolderId } from "@/lib/folders";
 
 interface IconProps {
   size?: number;
