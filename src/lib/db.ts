@@ -16,6 +16,7 @@ function getDb(): Database.Database {
     mkdirSync(DATA_DIR, { recursive: true });
     db = new Database(DB_PATH);
     db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
     db.exec(`
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY,
@@ -147,8 +148,15 @@ function migrateDb(database: Database.Database) {
   `);
 
   database.exec(`
+    DELETE FROM mail_filter_forward_log
+    WHERE filter_id NOT IN (SELECT id FROM mail_filters)
+  `);
+
+  database.exec(`
     INSERT OR IGNORE INTO mail_filter_applied_log (filter_id, account_id, folder, uid, applied_at)
-    SELECT filter_id, account_id, folder, uid, forwarded_at FROM mail_filter_forward_log
+    SELECT fl.filter_id, fl.account_id, fl.folder, fl.uid, fl.forwarded_at
+    FROM mail_filter_forward_log fl
+    INNER JOIN mail_filters mf ON mf.id = fl.filter_id
   `);
 }
 

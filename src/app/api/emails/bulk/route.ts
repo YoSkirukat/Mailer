@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAccountWithPassword } from "@/lib/db";
 import { isValidFolderId, type MailFolderId } from "@/lib/folders";
+import { clearFilterLogsForEmail } from "@/lib/filters-db";
 import { clearEmailLabels } from "@/lib/labels-db";
 import { deleteEmail, moveEmail } from "@/lib/imap";
 
@@ -41,22 +42,27 @@ export async function POST(request: Request) {
 
         const ref = { accountId: item.accountId, folder, uid: item.uid };
 
+        const clearLocalEmailState = () => {
+          clearEmailLabels(ref);
+          clearFilterLogsForEmail(ref.accountId, ref.folder, ref.uid);
+        };
+
         switch (action) {
           case "delete":
             await deleteEmail(account, folder, item.uid);
-            clearEmailLabels(ref);
+            clearLocalEmailState();
             break;
           case "archive":
             await moveEmail(account, folder, "archive", item.uid);
-            clearEmailLabels(ref);
+            clearLocalEmailState();
             break;
           case "spam":
             await moveEmail(account, folder, "spam", item.uid);
-            clearEmailLabels(ref);
+            clearLocalEmailState();
             break;
           case "notSpam":
             await moveEmail(account, "spam", "inbox", item.uid);
-            clearEmailLabels(ref);
+            clearLocalEmailState();
             break;
           default:
             throw new Error("Неизвестное действие");

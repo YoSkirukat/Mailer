@@ -281,17 +281,37 @@ export function wasFilterApplied(
   return Boolean(row);
 }
 
+export function clearFilterLogsForEmail(
+  accountId: string,
+  folder: string,
+  uid: number
+): void {
+  const db = getDatabase();
+  db.prepare(
+    `DELETE FROM mail_filter_applied_log
+     WHERE account_id = ? AND folder = ? AND uid = ?`
+  ).run(accountId, folder, uid);
+  db.prepare(
+    `DELETE FROM mail_filter_forward_log
+     WHERE account_id = ? AND folder = ? AND uid = ?`
+  ).run(accountId, folder, uid);
+}
+
 export function recordFilterApplied(
   filterId: string,
   accountId: string,
   folder: string,
   uid: number
 ): void {
-  getDatabase()
-    .prepare(
-      `INSERT OR IGNORE INTO mail_filter_applied_log
-       (filter_id, account_id, folder, uid, applied_at)
-       VALUES (?, ?, ?, ?, ?)`
-    )
-    .run(filterId, accountId, folder, uid, new Date().toISOString());
+  const db = getDatabase();
+  const filter = db
+    .prepare("SELECT 1 FROM mail_filters WHERE id = ?")
+    .get(filterId);
+  if (!filter) return;
+
+  db.prepare(
+    `INSERT OR IGNORE INTO mail_filter_applied_log
+     (filter_id, account_id, folder, uid, applied_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(filterId, accountId, folder, uid, new Date().toISOString());
 }

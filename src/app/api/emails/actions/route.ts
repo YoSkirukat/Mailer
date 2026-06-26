@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAccountWithPassword } from "@/lib/db";
 import { isValidFolderId } from "@/lib/folders";
+import { clearFilterLogsForEmail } from "@/lib/filters-db";
 import { clearEmailLabels } from "@/lib/labels-db";
 import { deleteEmail, moveEmail, setEmailSeen } from "@/lib/imap";
 
@@ -39,6 +40,11 @@ export async function POST(request: Request) {
 
     const ref = { accountId, folder, uid };
 
+    const clearLocalEmailState = () => {
+      clearEmailLabels(ref);
+      clearFilterLogsForEmail(accountId, folder, uid);
+    };
+
     switch (action) {
       case "markRead":
         await setEmailSeen(account, folder, uid, true);
@@ -48,19 +54,19 @@ export async function POST(request: Request) {
         break;
       case "delete":
         await deleteEmail(account, folder, uid);
-        clearEmailLabels(ref);
+        clearLocalEmailState();
         break;
       case "archive":
         await moveEmail(account, folder, "archive", uid);
-        clearEmailLabels(ref);
+        clearLocalEmailState();
         break;
       case "spam":
         await moveEmail(account, folder, "spam", uid);
-        clearEmailLabels(ref);
+        clearLocalEmailState();
         break;
       case "notSpam":
         await moveEmail(account, "spam", "inbox", uid);
-        clearEmailLabels(ref);
+        clearLocalEmailState();
         break;
       default:
         return NextResponse.json(
