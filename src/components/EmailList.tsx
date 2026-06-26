@@ -73,11 +73,13 @@ export function EmailList({
   onMarkUnread,
   onContextMenu,
 }: EmailListProps) {
-  if (loading) {
+  const showInitialLoading = loading && emails.length === 0;
+
+  if (showInitialLoading) {
     return <div className="loading">Загрузка писем…</div>;
   }
 
-  if (emails.length === 0) {
+  if (!loading && emails.length === 0) {
     return (
       <div className="loading">{emptyMessage ?? "В этой папке нет писем"}</div>
     );
@@ -87,7 +89,8 @@ export function EmailList({
   const showRepliedIndicator = folder === "inbox";
 
   return (
-    <div className="email-list">
+    <div className={`email-list-wrap ${loading ? "is-loading" : ""}`}>
+      <div className="email-list" aria-busy={loading}>
       {emails.map((email) => {
         const emailFolder = isValidFolderId(email.folder ?? "")
           ? email.folder
@@ -188,6 +191,7 @@ export function EmailList({
           </div>
         );
       })}
+      </div>
     </div>
   );
 }

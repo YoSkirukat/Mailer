@@ -157,7 +157,9 @@ export default function HomePage() {
       unreadOnly = false
     ) => {
       const requestId = ++loadEmailsRequestId.current;
-      const q = (search ?? activeSearchRef.current).trim();
+      const q = (
+        search === undefined ? activeSearchRef.current : (search ?? "")
+      ).trim();
       setLoading(true);
       setErrors([]);
       if (!q && !labelId) {
@@ -275,7 +277,8 @@ export default function HomePage() {
   const handleClearSearch = () => {
     setSearchQuery("");
     setActiveSearch("");
-    loadEmails(selectedAccountId, selectedFolder, selectedLabelId, null);
+    activeSearchRef.current = "";
+    loadEmails(selectedAccountId, selectedFolder, selectedLabelId, "");
   };
 
   const handleComposeTo = (to: string) => {
@@ -310,7 +313,23 @@ export default function HomePage() {
     setSelectedEmail(null);
     setActiveSearch("");
     setSearchQuery("");
-    loadEmails(selectedAccountId, folder, null, null, emailFilter === "unread");
+    activeSearchRef.current = "";
+
+    if (folder === "inbox") {
+      setEmailFilter("all");
+      setFilterLabelId(null);
+      setUnreadListMode(false);
+      loadEmails(selectedAccountId, folder, null, "");
+      return;
+    }
+
+    loadEmails(
+      selectedAccountId,
+      folder,
+      null,
+      "",
+      emailFilter === "unread"
+    );
   };
 
   const handleSelectLabel = (labelId: string) => {
@@ -318,7 +337,8 @@ export default function HomePage() {
     setSelectedEmail(null);
     setActiveSearch("");
     setSearchQuery("");
-    loadEmails(selectedAccountId, selectedFolder, labelId);
+    activeSearchRef.current = "";
+    loadEmails(selectedAccountId, selectedFolder, labelId, "");
   };
 
   const handleSelectAccount = (id: string | null) => {
@@ -328,10 +348,11 @@ export default function HomePage() {
     setSelectedEmail(null);
     setActiveSearch("");
     setSearchQuery("");
+    activeSearchRef.current = "";
     if (selectedLabelId) {
-      loadEmails(id, selectedFolder, selectedLabelId);
+      loadEmails(id, selectedFolder, selectedLabelId, "");
     } else {
-      loadEmails(id, selectedFolder, null, null, emailFilter === "unread");
+      loadEmails(id, selectedFolder, null, "", emailFilter === "unread");
     }
     refreshSidebarCounts(id);
   };

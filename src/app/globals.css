@@ -808,6 +808,29 @@ a {
   color: var(--text-muted);
 }
 
+.email-list-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.email-list-wrap.is-loading .email-list {
+  opacity: 0.42;
+  pointer-events: none;
+  user-select: none;
+}
+
+.email-list-wrap.is-loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  pointer-events: none;
+  z-index: 1;
+}
+
 .email-list {
   flex: 1;
   overflow-y: auto;
@@ -1560,6 +1583,7 @@ button.email-attachment-item {
 }
 
 .loading {
+  flex: 1;
   padding: 40px;
   text-align: center;
   color: var(--text-muted);
