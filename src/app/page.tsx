@@ -62,6 +62,9 @@ export default function HomePage() {
     y: number;
   } | null>(null);
   const [unreadCounts, setUnreadCounts] = useState(EMPTY_UNREAD_COUNTS);
+  const [accountUnreadCounts, setAccountUnreadCounts] = useState<
+    Record<string, number>
+  >({});
   const [labelUnreadCounts, setLabelUnreadCounts] = useState<
     Record<string, number>
   >({});
@@ -89,6 +92,16 @@ export default function HomePage() {
     }
   }, []);
 
+  const loadAccountUnreadCounts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/accounts/unread");
+      const data = await res.json();
+      if (!data.error) setAccountUnreadCounts(data);
+    } catch {
+      /* сохраняем предыдущие значения */
+    }
+  }, []);
+
   const loadUnreadCounts = useCallback(async (accountId?: string | null) => {
     try {
       const params = accountId
@@ -111,9 +124,10 @@ export default function HomePage() {
         countsRefreshTimer.current = null;
         loadUnreadCounts(accountId);
         loadLabelUnreadCounts(accountId);
+        loadAccountUnreadCounts();
       }, delayMs);
     },
-    [loadUnreadCounts, loadLabelUnreadCounts]
+    [loadUnreadCounts, loadLabelUnreadCounts, loadAccountUnreadCounts]
   );
 
   const refreshSidebarCounts = useCallback(
@@ -124,8 +138,9 @@ export default function HomePage() {
       }
       loadUnreadCounts(accountId);
       loadLabelUnreadCounts(accountId);
+      loadAccountUnreadCounts();
     },
-    [loadUnreadCounts, loadLabelUnreadCounts]
+    [loadUnreadCounts, loadLabelUnreadCounts, loadAccountUnreadCounts]
   );
 
   const loadLabels = useCallback(async () => {
@@ -438,6 +453,12 @@ export default function HomePage() {
           ...prev,
           [folder]: Math.max(0, (prev[folder] ?? 0) - 1),
         }));
+        if (folder === "inbox") {
+          setAccountUnreadCounts((prev) => ({
+            ...prev,
+            [summary.accountId]: Math.max(0, (prev[summary.accountId] ?? 0) - 1),
+          }));
+        }
         scheduleSidebarCounts(selectedAccountId);
       }
     },
@@ -519,6 +540,20 @@ export default function HomePage() {
     );
   };
 
+  const patchAccountUnreadCount = (
+    accountId: string,
+    folder: MailFolderId,
+    wasSeen: boolean,
+    nowSeen: boolean
+  ) => {
+    if (wasSeen === nowSeen || folder !== "inbox") return;
+    const delta = nowSeen ? -1 : 1;
+    setAccountUnreadCounts((prev) => ({
+      ...prev,
+      [accountId]: Math.max(0, (prev[accountId] ?? 0) + delta),
+    }));
+  };
+
   const patchFolderUnreadCount = (
     folder: MailFolderId,
     wasSeen: boolean,
@@ -545,6 +580,7 @@ export default function HomePage() {
     if (isSeenAction) {
       patchEmailSeen(email, nextSeen);
       patchFolderUnreadCount(folder, wasSeen, nextSeen);
+      patchAccountUnreadCount(email.accountId, folder, wasSeen, nextSeen);
     }
 
     const res = await fetch("/api/emails/actions", {
@@ -890,6 +926,7 @@ export default function HomePage() {
         selectedLabelId={selectedLabelId}
         selectedAccountId={selectedAccountId}
         unreadCounts={unreadCounts}
+        accountUnreadCounts={accountUnreadCounts}
         refreshing={loading}
         onRefresh={() => refreshList()}
         onSelectFolder={handleSelectFolder}

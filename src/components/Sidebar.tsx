@@ -17,6 +17,7 @@ interface SidebarProps {
   selectedLabelId: string | null;
   selectedAccountId: string | null;
   unreadCounts: Record<MailFolderId, number>;
+  accountUnreadCounts: Record<string, number>;
   refreshing?: boolean;
   onRefresh: () => void;
   onSelectFolder: (folder: MailFolderId) => void;
@@ -35,6 +36,7 @@ export function Sidebar({
   selectedLabelId,
   selectedAccountId,
   unreadCounts,
+  accountUnreadCounts,
   refreshing = false,
   onRefresh,
   onSelectFolder,
@@ -170,29 +172,37 @@ export function Sidebar({
           </span>
         </button>
 
-        {accounts.map((account) => (
-          <button
-            key={account.id}
-            className={`account-item ${selectedAccountId === account.id ? "active" : ""}`}
-            onClick={() => onSelectAccount(account.id)}
-          >
-            <span
-              className="account-avatar"
-              style={{ backgroundColor: `${account.color}22`, color: account.color }}
+        {accounts.map((account) => {
+          const unread = accountUnreadCounts[account.id] ?? 0;
+          return (
+            <button
+              key={account.id}
+              className={`account-item ${selectedAccountId === account.id ? "active" : ""}`}
+              onClick={() => onSelectAccount(account.id)}
             >
-              {account.name.charAt(0).toUpperCase()}
-            </span>
-            <span className="account-info">
-              <div className="name">{account.name}</div>
-              <div className="email">{account.email}</div>
-            </span>
-          </button>
-        ))}
+              <span
+                className="account-avatar"
+                style={{ backgroundColor: `${account.color}22`, color: account.color }}
+              >
+                {account.name.charAt(0).toUpperCase()}
+              </span>
+              <span className="account-info">
+                <div className="name">
+                  {account.name}
+                  {unread > 0 && (
+                    <span className="folder-unread"> ({unread})</span>
+                  )}
+                </div>
+                <div className="email">{account.email}</div>
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       <div className="sidebar-footer">
         <div className="sidebar-actions">
-          <button className="btn btn-primary" onClick={onOpenSettings}>
+          <button className="btn sidebar-settings-btn" onClick={onOpenSettings}>
             Настройки
           </button>
         </div>

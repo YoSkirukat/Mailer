@@ -1,59 +1,22 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { getFaviconUrls } from "@/lib/favicon";
 
-function buildFaviconDataUrl(bright: boolean): string {
-  const canvas = document.createElement("canvas");
-  canvas.width = 32;
-  canvas.height = 32;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return "";
+const MANAGED_FAVICON_ID = "mailer-managed-favicon";
 
-  const bg = bright ? "#4f8cff" : "#b8d4ff";
-  const stroke = bright ? "#ffffff" : "rgba(255,255,255,0.55)";
+function takeOverFavicon(): HTMLLinkElement {
+  const existing = document.getElementById(
+    MANAGED_FAVICON_ID
+  ) as HTMLLinkElement | null;
+  if (existing) return existing;
 
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, 32, 32);
-
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = 1.75;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-
-  ctx.strokeRect(6.5, 9.5, 19, 13);
-
-  ctx.beginPath();
-  ctx.moveTo(6, 11);
-  ctx.lineTo(16, 18);
-  ctx.lineTo(26, 11);
-  ctx.stroke();
-
-  return canvas.toDataURL("image/png");
-}
-
-let faviconOn = "";
-let faviconOff = "";
-
-function getFaviconUrls() {
-  if (!faviconOn) {
-    faviconOn = buildFaviconDataUrl(true);
-    faviconOff = buildFaviconDataUrl(false);
-  }
-  return { on: faviconOn, off: faviconOff };
-}
-
-function ensureManagedFavicon(): HTMLLinkElement {
   document
     .querySelectorAll('link[rel="icon"], link[rel="shortcut icon"]')
     .forEach((node) => node.remove());
 
-  const existing = document.getElementById(
-    "mailer-managed-favicon"
-  ) as HTMLLinkElement | null;
-  if (existing) return existing;
-
   const link = document.createElement("link");
-  link.id = "mailer-managed-favicon";
+  link.id = MANAGED_FAVICON_ID;
   link.rel = "icon";
   link.type = "image/png";
   document.head.appendChild(link);
@@ -70,28 +33,40 @@ export function TabTitle({ folderName, unreadCount }: TabTitleProps) {
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
+    const link = takeOverFavicon();
+    linkRef.current = link;
+    link.href = getFaviconUrls().on;
+  }, []);
+
+  useEffect(() => {
     document.title =
       unreadCount > 0 ? `(${unreadCount}) ${folderName}` : folderName;
+  }, [folderName, unreadCount]);
 
-    const { on, off } = getFaviconUrls();
-    const link = linkRef.current ?? ensureManagedFavicon();
-    linkRef.current = link;
-    link.href = on;
-
+  useEffect(() => {
     if (timerRef.current !== null) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
     }
 
+    const link = linkRef.current;
+    if (!link) return;
+
+    const { on, off } = getFaviconUrls();
+
     if (unreadCount <= 0) {
+      if (link.href !== on) link.href = on;
       return;
     }
 
     let bright = true;
+    if (link.href !== on) link.href = on;
+
     timerRef.current = window.setInterval(() => {
       bright = !bright;
-      if (linkRef.current) {
-        linkRef.current.href = bright ? on : off;
+      const next = bright ? on : off;
+      if (linkRef.current && linkRef.current.href !== next) {
+        linkRef.current.href = next;
       }
     }, 1000);
 
@@ -100,11 +75,11 @@ export function TabTitle({ folderName, unreadCount }: TabTitleProps) {
         window.clearInterval(timerRef.current);
         timerRef.current = null;
       }
-      if (linkRef.current) {
+      if (linkRef.current && linkRef.current.href !== on) {
         linkRef.current.href = on;
       }
     };
-  }, [folderName, unreadCount]);
+  }, [unreadCount]);
 
   return null;
 }
