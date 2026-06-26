@@ -31,6 +31,8 @@ function normalizeErrors(items: unknown): string[] {
     .filter(Boolean);
 }
 
+const AUTO_REFRESH_MS = 20_000;
+
 const emptyDraft = (accountId: string, accounts: MailAccount[]): ComposeDraft => {
   const account = accounts.find((item) => item.id === accountId);
   return {
@@ -78,6 +80,9 @@ export default function HomePage() {
   activeSearchRef.current = activeSearch;
   const countsRefreshTimer = useRef<number | null>(null);
   const loadEmailsRequestId = useRef(0);
+  const silentLoadRequestId = useRef(0);
+  const loadingRef = useRef(loading);
+  loadingRef.current = loading;
   const detailCacheRef = useRef<Map<string, EmailDetail>>(new Map());
   const prefetchInFlightRef = useRef<Set<string>>(new Set());
 
@@ -169,14 +174,36 @@ export default function HomePage() {
       folder: MailFolderId = "inbox",
       labelId?: string | null,
       search?: string | null,
-      unreadOnly = false
+      unreadOnly = false,
+      options?: { silent?: boolean }
     ) => {
-      const requestId = ++loadEmailsRequestId.current;
+      const silent = options?.silent ?? false;
+      if (silent && loadingRef.current) return;
+
+      const userRequestAtStart = loadEmailsRequestId.current;
+      const requestId = silent
+        ? ++silentLoadRequestId.current
+        : ++loadEmailsRequestId.current;
       const q = (
         search === undefined ? activeSearchRef.current : (search ?? "")
       ).trim();
-      setLoading(true);
-      setErrors([]);
+
+      const applyEmails = (nextEmails: EmailSummary[], nextErrors?: string[]) => {
+        if (silent) {
+          if (requestId !== silentLoadRequestId.current) return;
+          if (loadEmailsRequestId.current !== userRequestAtStart) return;
+          setEmails(nextEmails);
+          return;
+        }
+        if (requestId !== loadEmailsRequestId.current) return;
+        setEmails(nextEmails);
+        if (nextErrors !== undefined) setErrors(nextErrors);
+      };
+
+      if (!silent) {
+        setLoading(true);
+        setErrors([]);
+      }
       if (!q && !labelId) {
         setUnreadListMode(unreadOnly);
       }
@@ -186,12 +213,10 @@ export default function HomePage() {
           if (accountId) params.set("accountId", accountId);
           const res = await fetch(`/api/emails?${params}`);
           const data = await res.json();
-          if (requestId !== loadEmailsRequestId.current) return;
           if (Array.isArray(data)) {
-            setEmails(data);
+            applyEmails(data);
           } else {
-            setEmails(data.emails || []);
-            setErrors(normalizeErrors(data.errors));
+            applyEmails(data.emails || [], normalizeErrors(data.errors));
           }
         } else if (labelId) {
           const params = new URLSearchParams();
@@ -201,12 +226,12 @@ export default function HomePage() {
             `/api/labels/${labelId}/emails${query ? `?${query}` : ""}`
           );
           const data = await res.json();
-          if (requestId !== loadEmailsRequestId.current) return;
           if (!res.ok) {
-            setErrors([data.error || "Не удалось загрузить письма"]);
-            setEmails([]);
+            if (!silent) {
+              applyEmails([], [data.error || "Не удалось загрузить письма"]);
+            }
           } else {
-            setEmails(data.emails || []);
+            applyEmails(data.emails || []);
           }
         } else {
           const params = new URLSearchParams({ folder });
@@ -214,20 +239,18 @@ export default function HomePage() {
           if (unreadOnly) params.set("unreadOnly", "1");
           const res = await fetch(`/api/emails?${params}`);
           const data = await res.json();
-          if (requestId !== loadEmailsRequestId.current) return;
           if (Array.isArray(data)) {
-            setEmails(data);
+            applyEmails(data);
           } else {
-            setEmails(data.emails || []);
-            setErrors(normalizeErrors(data.errors));
+            applyEmails(data.emails || [], normalizeErrors(data.errors));
           }
         }
       } catch {
-        if (requestId === loadEmailsRequestId.current) {
+        if (!silent && requestId === loadEmailsRequestId.current) {
           setErrors(["Не удалось загрузить письма"]);
         }
       } finally {
-        if (requestId === loadEmailsRequestId.current) {
+        if (!silent && requestId === loadEmailsRequestId.current) {
           setLoading(false);
         }
       }
@@ -236,16 +259,30 @@ export default function HomePage() {
   );
 
   const refreshList = useCallback(
-    async (accountId?: string | null, refreshCounts = true) => {
+    async (
+      accountId?: string | null,
+      refreshCounts = true,
+      options?: { silent?: boolean }
+    ) => {
+      const silent = options?.silent ?? false;
       const acc = accountId !== undefined ? accountId : selectedAccountId;
       const unreadOnly =
         emailFilter === "unread" && !activeSearchRef.current && !selectedLabelId;
       if (activeSearchRef.current) {
-        await loadEmails(acc, selectedFolder, selectedLabelId, activeSearchRef.current);
+        await loadEmails(
+          acc,
+          selectedFolder,
+          selectedLabelId,
+          activeSearchRef.current,
+          false,
+          { silent }
+        );
       } else if (selectedLabelId) {
-        await loadEmails(acc, selectedFolder, selectedLabelId);
+        await loadEmails(acc, selectedFolder, selectedLabelId, undefined, false, {
+          silent,
+        });
       } else {
-        await loadEmails(acc, selectedFolder, null, null, unreadOnly);
+        await loadEmails(acc, selectedFolder, null, null, unreadOnly, { silent });
       }
       if (refreshCounts) {
         refreshSidebarCounts(acc);
@@ -253,6 +290,9 @@ export default function HomePage() {
     },
     [loadEmails, selectedAccountId, selectedFolder, selectedLabelId, refreshSidebarCounts, emailFilter]
   );
+
+  const refreshListRef = useRef(refreshList);
+  refreshListRef.current = refreshList;
 
   useEffect(() => {
     loadLabels();
@@ -270,6 +310,17 @@ export default function HomePage() {
     // Только при первом открытии приложения
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (accounts.length === 0) return;
+
+    const tick = () => {
+      void refreshListRef.current(undefined, true, { silent: true });
+    };
+
+    const intervalId = window.setInterval(tick, AUTO_REFRESH_MS);
+    return () => window.clearInterval(intervalId);
+  }, [accounts.length]);
 
   useEffect(() => {
     if (emailFilter !== "unread" || activeSearch || selectedLabelId) return;
