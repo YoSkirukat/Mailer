@@ -7,7 +7,7 @@ import {
 } from "@/lib/email-detail-cache";
 import { isValidFolderId } from "@/lib/folders";
 import { attachAllLabelsToEmails, attachLabelsToEmails, getLabelsForEmail } from "@/lib/labels-db";
-import { fetchEmail, fetchMailbox, fetchUnreadMailbox, searchAllMailboxes, setEmailSeen } from "@/lib/imap";
+import { fetchEmail, fetchMailbox, fetchUnreadMailbox, formatImapErrorMessage, searchAllMailboxes, setEmailSeen } from "@/lib/imap";
 import type { EmailSummary } from "@/lib/types";
 export async function GET(request: Request) {
   try {
@@ -82,11 +82,7 @@ export async function GET(request: Request) {
       }
 
       const account = accounts[index];
-      const raw =
-        result.reason instanceof Error
-          ? result.reason.message
-          : String(result.reason ?? "");
-      const detail = raw.trim() || "Ошибка загрузки";
+      const detail = formatImapErrorMessage(result.reason);
       const message = account
         ? `${account.email}: ${detail}`
         : detail;

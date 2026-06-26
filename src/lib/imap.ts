@@ -2,6 +2,8 @@ import { ImapFlow, type SearchObject } from "imapflow";
 import { simpleParser } from "mailparser";
 import type { AccountWithPassword } from "./db";
 import {
+  EMPTY_UNREAD_COUNTS,
+  MAIL_FOLDERS,
   type MailFolderId,
   resolveMailbox,
   SEARCHABLE_FOLDERS,
@@ -15,16 +17,127 @@ import {
 import { isImapSecure, tlsOptions } from "./mail-config";
 import type { EmailDetail, EmailSummary, EmailAttachment } from "./types";
 
+const IMAP_MAX_CONCURRENT = 3;
+let imapInFlight = 0;
+const imapWaiters: Array<() => void> = [];
+
+function acquireImapSlot(): Promise<void> {
+  if (imapInFlight < IMAP_MAX_CONCURRENT) {
+    imapInFlight++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    imapWaiters.push(() => {
+      imapInFlight++;
+      resolve();
+    });
+  });
+}
+
+function releaseImapSlot(): void {
+  imapInFlight = Math.max(0, imapInFlight - 1);
+  const next = imapWaiters.shift();
+  if (next) next();
+}
+
+async function withImapSlot<T>(fn: () => Promise<T>): Promise<T> {
+  await acquireImapSlot();
+  try {
+    return await fn();
+  } finally {
+    releaseImapSlot();
+  }
+}
+
 function createImapClient(account: AccountWithPassword) {
   const tls = tlsOptions(account.ignoreTlsErrors);
-  return new ImapFlow({
+  const client = new ImapFlow({
     host: account.imapHost,
     port: account.imapPort,
     secure: isImapSecure(account.imapPort),
     auth: { user: account.email, pass: account.password },
     logger: false,
+    connectionTimeout: 30_000,
+    greetingTimeout: 20_000,
     ...(tls ? { tls } : {}),
   });
+  client.on("error", () => {
+    /* подавляем uncaughtException при обрыве сокета */
+  });
+  return client;
+}
+
+function isTransientImapError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  if (
+    code === "ETIMEDOUT" ||
+    code === "ECONNRESET" ||
+    code === "ECONNREFUSED" ||
+    code === "EPIPE"
+  ) {
+    return true;
+  }
+  if (error instanceof AggregateError) {
+    return error.errors.some(isTransientImapError);
+  }
+  return false;
+}
+
+export function formatImapErrorMessage(error: unknown): string {
+  if (error instanceof AggregateError) {
+    const nested = error.errors
+      .map((item) => formatImapErrorMessage(item))
+      .filter((item) => item && item !== "Ошибка загрузки");
+    if (nested.length > 0) return nested.join("; ");
+    if ((error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+      return "Таймаут подключения к почтовому серверу";
+    }
+  }
+
+  const code = (error as NodeJS.ErrnoException)?.code;
+  if (code === "ETIMEDOUT") {
+    return "Таймаут подключения к почтовому серверу";
+  }
+  if (code === "ECONNRESET") {
+    return "Соединение с сервером разорвано";
+  }
+  if (code === "ENOTFOUND") {
+    return "Почтовый сервер не найден";
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+  return "Ошибка загрузки";
+}
+
+async function safeLogout(client: ImapFlow): Promise<void> {
+  try {
+    await client.logout();
+  } catch {
+    /* соединение уже закрыто */
+  }
+}
+
+async function connectAccount(
+  account: AccountWithPassword,
+  retries = 2
+): Promise<ImapFlow> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const client = createImapClient(account);
+    try {
+      await client.connect();
+      return client;
+    } catch (error) {
+      lastError = error;
+      await safeLogout(client);
+      if (!isTransientImapError(error) || attempt === retries) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
+    }
+  }
+  throw lastError;
 }
 
 async function withMailbox<T>(
@@ -32,22 +145,23 @@ async function withMailbox<T>(
   folderId: MailFolderId,
   fn: (client: ImapFlow) => Promise<T>
 ): Promise<T> {
-  const client = createImapClient(account);
-  await client.connect();
-  try {
-    const mailbox = await resolveMailbox(client, folderId);
-    if (!mailbox) {
-      throw new Error(`Папка «${folderId}» не найдена на сервере`);
-    }
-    const lock = await client.getMailboxLock(mailbox);
+  return withImapSlot(async () => {
+    const client = await connectAccount(account);
     try {
-      return await fn(client);
+      const mailbox = await resolveMailbox(client, folderId);
+      if (!mailbox) {
+        throw new Error(`Папка «${folderId}» не найдена на сервере`);
+      }
+      const lock = await client.getMailboxLock(mailbox);
+      try {
+        return await fn(client);
+      } finally {
+        lock.release();
+      }
     } finally {
-      lock.release();
+      await safeLogout(client);
     }
-  } finally {
-    await client.logout();
-  }
+  });
 }
 
 function formatAddress(
@@ -523,9 +637,10 @@ export async function fetchEmailsBatch(
 export async function testImapConnection(
   account: AccountWithPassword
 ): Promise<void> {
-  const client = createImapClient(account);
-  await client.connect();
-  await client.logout();
+  await withImapSlot(async () => {
+    const client = await connectAccount(account);
+    await safeLogout(client);
+  });
 }
 
 export async function setEmailSeen(
@@ -563,54 +678,81 @@ export async function deleteEmail(
   });
 }
 
+export async function clearMailbox(
+  account: AccountWithPassword,
+  folderId: MailFolderId
+): Promise<number> {
+  return withMailbox(account, folderId, async (client) => {
+    const uids = await client.search({ all: true }, { uid: true });
+    if (!uids || uids.length === 0) return 0;
+    await client.messageDelete(uids, { uid: true });
+    return uids.length;
+  });
+}
+
 export async function moveEmail(
   account: AccountWithPassword,
   fromFolderId: MailFolderId,
   toFolderId: MailFolderId,
   uid: number
 ): Promise<void> {
-  const client = createImapClient(account);
-  await client.connect();
-  try {
-    const fromPath = await resolveMailbox(client, fromFolderId);
-    const toPath = await resolveMailbox(client, toFolderId);
-    if (!fromPath) {
-      throw new Error(`Исходная папка «${fromFolderId}» не найдена`);
-    }
-    if (!toPath) {
-      throw new Error(`Папка назначения «${toFolderId}» не найдена на сервере`);
-    }
-
-    const lock = await client.getMailboxLock(fromPath);
+  await withImapSlot(async () => {
+    const client = await connectAccount(account);
     try {
-      const moved = await client.messageMove(uid, toPath, { uid: true });
-      if (!moved) {
-        throw new Error("Не удалось переместить письмо");
+      const fromPath = await resolveMailbox(client, fromFolderId);
+      const toPath = await resolveMailbox(client, toFolderId);
+      if (!fromPath) {
+        throw new Error(`Исходная папка «${fromFolderId}» не найдена`);
+      }
+      if (!toPath) {
+        throw new Error(`Папка назначения «${toFolderId}» не найдена на сервере`);
+      }
+
+      const lock = await client.getMailboxLock(fromPath);
+      try {
+        const moved = await client.messageMove(uid, toPath, { uid: true });
+        if (!moved) {
+          throw new Error("Не удалось переместить письмо");
+        }
+      } finally {
+        lock.release();
       }
     } finally {
-      lock.release();
+      await safeLogout(client);
     }
-  } finally {
-    await client.logout();
-  }
+  });
 }
 
 export async function getFolderUnreadCount(
   account: AccountWithPassword,
   folderId: MailFolderId
 ): Promise<number> {
-  const client = createImapClient(account);
-  await client.connect();
-  try {
-    const path = await resolveMailbox(client, folderId);
-    if (!path) return 0;
-    const status = await client.status(path, { unseen: true });
-    return status.unseen ?? 0;
-  } catch {
-    return 0;
-  } finally {
-    await client.logout();
-  }
+  const counts = await getAllFolderUnreadCounts(account);
+  return counts[folderId] ?? 0;
+}
+
+export async function getAllFolderUnreadCounts(
+  account: AccountWithPassword
+): Promise<Record<MailFolderId, number>> {
+  return withImapSlot(async () => {
+    const counts: Record<MailFolderId, number> = { ...EMPTY_UNREAD_COUNTS };
+    const client = await connectAccount(account);
+    try {
+      for (const folder of MAIL_FOLDERS) {
+        try {
+          const path = await resolveMailbox(client, folder.id);
+          if (!path) continue;
+          const status = await client.status(path, { unseen: true });
+          counts[folder.id] = status.unseen ?? 0;
+        } catch {
+          counts[folder.id] = 0;
+        }
+      }
+      return counts;
+    } finally {
+      await safeLogout(client);
+    }
+  });
 }
 
 /** @deprecated use fetchMailbox */

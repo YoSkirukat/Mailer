@@ -9,7 +9,8 @@ type EmailAction =
   | "markUnread"
   | "delete"
   | "archive"
-  | "spam";
+  | "spam"
+  | "notSpam";
 
 export async function POST(request: Request) {
   try {
@@ -55,6 +56,10 @@ export async function POST(request: Request) {
         break;
       case "spam":
         await moveEmail(account, folder, "spam", uid);
+        clearEmailLabels(ref);
+        break;
+      case "notSpam":
+        await moveEmail(account, "spam", "inbox", uid);
         clearEmailLabels(ref);
         break;
       default:

@@ -5,7 +5,7 @@ import {
   MAIL_FOLDERS,
   type MailFolderId,
 } from "@/lib/folders";
-import { getFolderUnreadCount } from "@/lib/imap";
+import { getAllFolderUnreadCounts } from "@/lib/imap";
 
 export async function GET(request: Request) {
   try {
@@ -22,19 +22,17 @@ export async function GET(request: Request) {
       return NextResponse.json(counts);
     }
 
-    const tasks = accounts.flatMap((acc) => {
+    const tasks = accounts.map(async (acc) => {
       const full = getAccountWithPassword(acc.id);
-      if (!full) return [];
-      return MAIL_FOLDERS.map(async (folder) => {
-        const count = await getFolderUnreadCount(full, folder.id);
-        return { folderId: folder.id, count };
-      });
+      if (!full) return EMPTY_UNREAD_COUNTS;
+      return getAllFolderUnreadCounts(full);
     });
 
     const results = await Promise.allSettled(tasks);
     for (const result of results) {
-      if (result.status === "fulfilled") {
-        counts[result.value.folderId] += result.value.count;
+      if (result.status !== "fulfilled") continue;
+      for (const folder of MAIL_FOLDERS) {
+        counts[folder.id] += result.value[folder.id] ?? 0;
       }
     }
 

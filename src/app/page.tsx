@@ -22,6 +22,14 @@ import {
 } from "@/lib/email-utils";
 import { getFolderLabel, EMPTY_UNREAD_COUNTS, type MailFolderId } from "@/lib/folders";
 import { emailDetailKey, summaryToPartialDetail } from "@/lib/email-detail-utils";
+import {
+  collectNewInboxEmails,
+  emailNotificationKey,
+  fetchInboxEmails,
+  isNotificationSupported,
+  notifyNewEmails,
+  requestNotificationPermission,
+} from "@/lib/notifications";
 import type { EmailDetail, EmailSummary, MailAccount, MailLabel } from "@/lib/types";
 
 function normalizeErrors(items: unknown): string[] {
@@ -63,6 +71,9 @@ export default function HomePage() {
     x: number;
     y: number;
   } | null>(null);
+  const [checkedEmailKeys, setCheckedEmailKeys] = useState<Set<string>>(
+    () => new Set()
+  );
   const [unreadCounts, setUnreadCounts] = useState(EMPTY_UNREAD_COUNTS);
   const [accountUnreadCounts, setAccountUnreadCounts] = useState<
     Record<string, number>
@@ -83,6 +94,19 @@ export default function HomePage() {
   const silentLoadRequestId = useRef(0);
   const loadingRef = useRef(loading);
   loadingRef.current = loading;
+  const knownInboxKeysRef = useRef<Set<string>>(new Set());
+  const inboxSnapshotReadyRef = useRef(false);
+  const backgroundTickInFlightRef = useRef(false);
+  const selectedFolderRef = useRef(selectedFolder);
+  selectedFolderRef.current = selectedFolder;
+  const selectedAccountIdRef = useRef(selectedAccountId);
+  selectedAccountIdRef.current = selectedAccountId;
+  const selectedLabelIdRef = useRef(selectedLabelId);
+  selectedLabelIdRef.current = selectedLabelId;
+  const emailFilterRef = useRef(emailFilter);
+  emailFilterRef.current = emailFilter;
+  const composeDraftRef = useRef(composeDraft);
+  composeDraftRef.current = composeDraft;
   const detailCacheRef = useRef<Map<string, EmailDetail>>(new Map());
   const prefetchInFlightRef = useRef<Set<string>>(new Set());
 
@@ -176,7 +200,7 @@ export default function HomePage() {
       search?: string | null,
       unreadOnly = false,
       options?: { silent?: boolean }
-    ) => {
+    ): Promise<EmailSummary[] | undefined> => {
       const silent = options?.silent ?? false;
       if (silent && loadingRef.current) return;
 
@@ -187,17 +211,24 @@ export default function HomePage() {
       const q = (
         search === undefined ? activeSearchRef.current : (search ?? "")
       ).trim();
+      let appliedEmails: EmailSummary[] | undefined;
 
-      const applyEmails = (nextEmails: EmailSummary[], nextErrors?: string[]) => {
+      const applyEmails = (
+        nextEmails: EmailSummary[],
+        nextErrors?: string[]
+      ): boolean => {
         if (silent) {
-          if (requestId !== silentLoadRequestId.current) return;
-          if (loadEmailsRequestId.current !== userRequestAtStart) return;
+          if (requestId !== silentLoadRequestId.current) return false;
+          if (loadEmailsRequestId.current !== userRequestAtStart) return false;
           setEmails(nextEmails);
-          return;
+          appliedEmails = nextEmails;
+          return true;
         }
-        if (requestId !== loadEmailsRequestId.current) return;
+        if (requestId !== loadEmailsRequestId.current) return false;
         setEmails(nextEmails);
         if (nextErrors !== undefined) setErrors(nextErrors);
+        appliedEmails = nextEmails;
+        return true;
       };
 
       if (!silent) {
@@ -254,6 +285,7 @@ export default function HomePage() {
           setLoading(false);
         }
       }
+      return appliedEmails;
     },
     []
   );
@@ -263,13 +295,14 @@ export default function HomePage() {
       accountId?: string | null,
       refreshCounts = true,
       options?: { silent?: boolean }
-    ) => {
+    ): Promise<EmailSummary[] | undefined> => {
       const silent = options?.silent ?? false;
       const acc = accountId !== undefined ? accountId : selectedAccountId;
       const unreadOnly =
         emailFilter === "unread" && !activeSearchRef.current && !selectedLabelId;
+      let emails: EmailSummary[] | undefined;
       if (activeSearchRef.current) {
-        await loadEmails(
+        emails = await loadEmails(
           acc,
           selectedFolder,
           selectedLabelId,
@@ -278,15 +311,16 @@ export default function HomePage() {
           { silent }
         );
       } else if (selectedLabelId) {
-        await loadEmails(acc, selectedFolder, selectedLabelId, undefined, false, {
+        emails = await loadEmails(acc, selectedFolder, selectedLabelId, undefined, false, {
           silent,
         });
       } else {
-        await loadEmails(acc, selectedFolder, null, null, unreadOnly, { silent });
+        emails = await loadEmails(acc, selectedFolder, null, null, unreadOnly, { silent });
       }
       if (refreshCounts) {
         refreshSidebarCounts(acc);
       }
+      return emails;
     },
     [loadEmails, selectedAccountId, selectedFolder, selectedLabelId, refreshSidebarCounts, emailFilter]
   );
@@ -294,12 +328,78 @@ export default function HomePage() {
   const refreshListRef = useRef(refreshList);
   refreshListRef.current = refreshList;
 
+  const seedInboxSnapshot = useCallback(async () => {
+    const inboxEmails = await fetchInboxEmails();
+    knownInboxKeysRef.current = new Set(inboxEmails.map(emailNotificationKey));
+    inboxSnapshotReadyRef.current = true;
+  }, []);
+
+  const updateInboxSnapshot = useCallback((inboxEmails: EmailSummary[]) => {
+    const nextKeys = new Set(inboxEmails.map(emailNotificationKey));
+
+    if (!inboxSnapshotReadyRef.current) {
+      knownInboxKeysRef.current = nextKeys;
+      inboxSnapshotReadyRef.current = true;
+      return;
+    }
+
+    const newEmails = collectNewInboxEmails(
+      inboxEmails,
+      knownInboxKeysRef.current
+    );
+    knownInboxKeysRef.current = nextKeys;
+
+    if (newEmails.length === 0 || document.visibilityState === "visible") return;
+
+    void requestNotificationPermission().then(() => {
+      notifyNewEmails(newEmails);
+    });
+  }, []);
+
+  const canReuseListForInboxNotifications = useCallback(
+    (listEmails: EmailSummary[] | undefined): listEmails is EmailSummary[] => {
+      if (!listEmails) return false;
+      return (
+        !activeSearchRef.current &&
+        !selectedLabelIdRef.current &&
+        selectedFolderRef.current === "inbox" &&
+        !selectedAccountIdRef.current &&
+        emailFilterRef.current !== "unread"
+      );
+    },
+    []
+  );
+
+  const runBackgroundTick = useCallback(async () => {
+    if (backgroundTickInFlightRef.current) return;
+    if (loadingRef.current || composeDraftRef.current) return;
+    backgroundTickInFlightRef.current = true;
+    try {
+      const listEmails = await refreshListRef.current(undefined, true, {
+        silent: true,
+      });
+      const inboxEmails = canReuseListForInboxNotifications(listEmails)
+        ? listEmails
+        : await fetchInboxEmails();
+      updateInboxSnapshot(inboxEmails);
+    } catch {
+      /* фоновое обновление не должно ломать интерфейс */
+    } finally {
+      backgroundTickInFlightRef.current = false;
+    }
+  }, [canReuseListForInboxNotifications, updateInboxSnapshot]);
+
+  const runBackgroundTickRef = useRef(runBackgroundTick);
+  runBackgroundTickRef.current = runBackgroundTick;
+
   useEffect(() => {
     loadLabels();
-    loadAccounts().then((accs) => {
+    loadAccounts().then(async (accs) => {
       if (accs.length > 0) {
-        loadEmails(null, "inbox");
+        await loadEmails(null, "inbox");
+        await seedInboxSnapshot();
         refreshSidebarCounts(null);
+        void requestNotificationPermission();
       } else setLoading(false);
     });
     return () => {
@@ -315,7 +415,7 @@ export default function HomePage() {
     if (accounts.length === 0) return;
 
     const tick = () => {
-      void refreshListRef.current(undefined, true, { silent: true });
+      void runBackgroundTickRef.current();
     };
 
     const intervalId = window.setInterval(tick, AUTO_REFRESH_MS);
@@ -398,6 +498,15 @@ export default function HomePage() {
     );
   };
 
+  const handleSelectFolderRef = useRef(handleSelectFolder);
+  handleSelectFolderRef.current = handleSelectFolder;
+
+  useEffect(() => {
+    const onFocusInbox = () => handleSelectFolderRef.current("inbox");
+    document.addEventListener("mailer:focus-inbox", onFocusInbox);
+    return () => document.removeEventListener("mailer:focus-inbox", onFocusInbox);
+  }, []);
+
   const handleSelectLabel = (labelId: string) => {
     setSelectedLabelId(labelId);
     setSelectedEmail(null);
@@ -425,6 +534,24 @@ export default function HomePage() {
 
   const getEmailFolder = (email: EmailSummary): MailFolderId =>
     (email.folder as MailFolderId) || selectedFolder;
+
+  const clearCheckedEmails = useCallback(() => {
+    setCheckedEmailKeys(new Set());
+  }, []);
+
+  const toggleCheckedEmail = useCallback(
+    (email: EmailSummary, checked: boolean) => {
+      const folder: MailFolderId = selectedLabelId ? "inbox" : selectedFolder;
+      const key = emailDetailKey(email, folder);
+      setCheckedEmailKeys((prev) => {
+        const next = new Set(prev);
+        if (checked) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+    },
+    [selectedFolder, selectedLabelId]
+  );
 
   const storeDetailInCache = useCallback((detail: EmailDetail, folder: MailFolderId) => {
     detailCacheRef.current.set(emailDetailKey(detail, folder), detail);
@@ -620,7 +747,7 @@ export default function HomePage() {
 
   const runActionOnEmail = async (
     email: EmailSummary,
-    action: "markRead" | "markUnread" | "delete" | "archive" | "spam"
+    action: "markRead" | "markUnread" | "delete" | "archive" | "spam" | "notSpam"
   ) => {
     const folder = getEmailFolder(email);
     const isSeenAction = action === "markRead" || action === "markUnread";
@@ -656,7 +783,10 @@ export default function HomePage() {
     }
 
     const removesFromList =
-      action === "delete" || action === "archive" || action === "spam";
+      action === "delete" ||
+      action === "archive" ||
+      action === "spam" ||
+      action === "notSpam";
 
     if (
       selectedEmail &&
@@ -674,6 +804,81 @@ export default function HomePage() {
 
     await refreshList();
     return true;
+  };
+
+  const runBulkAction = async (
+    action: "delete" | "archive" | "spam" | "notSpam"
+  ) => {
+    const folder: MailFolderId = selectedLabelId ? "inbox" : selectedFolder;
+    const items = filteredEmails
+      .filter((email) => checkedEmailKeys.has(emailDetailKey(email, folder)))
+      .map((email) => ({
+        accountId: email.accountId,
+        uid: email.uid,
+        folder: getEmailFolder(email),
+      }));
+
+    if (items.length === 0) return;
+
+    setActionLoading(true);
+    try {
+      const res = await fetch("/api/emails/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, items }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErrors([data.error || "Не удалось выполнить действие"]);
+        return;
+      }
+      if (data.errors?.length) {
+        setErrors(data.errors);
+      }
+      clearCheckedEmails();
+      if (
+        selectedEmail &&
+        items.some(
+          (item) =>
+            item.accountId === selectedEmail.accountId &&
+            item.uid === selectedEmail.uid
+        )
+      ) {
+        setSelectedEmail(null);
+      }
+      await refreshList();
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleClearSpam = async () => {
+    if (
+      !window.confirm("Удалить все письма из папки «Спам»? Это действие нельзя отменить.")
+    ) {
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const res = await fetch("/api/emails/clear-folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          folder: "spam",
+          accountId: selectedAccountId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErrors([data.error || "Не удалось очистить спам"]);
+        return;
+      }
+      clearCheckedEmails();
+      setSelectedEmail(null);
+      await refreshList();
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const fetchEmailDetail = async (summary: EmailSummary): Promise<EmailDetail | null> => {
@@ -795,7 +1000,7 @@ export default function HomePage() {
   };
 
   const runEmailAction = async (
-    action: "markRead" | "markUnread" | "delete" | "archive"
+    action: "markRead" | "markUnread" | "delete" | "archive" | "spam" | "notSpam"
   ) => {
     if (!selectedEmail) return;
     const isSeenAction = action === "markRead" || action === "markUnread";
@@ -834,6 +1039,16 @@ export default function HomePage() {
 
     if (action === "archive") {
       runEmailAction("archive");
+      return;
+    }
+
+    if (action === "spam") {
+      runEmailAction("spam");
+      return;
+    }
+
+    if (action === "notSpam") {
+      runEmailAction("notSpam");
       return;
     }
 
@@ -921,6 +1136,10 @@ export default function HomePage() {
   }, [emails, emailFilter, filterLabelId]);
 
   useEffect(() => {
+    clearCheckedEmails();
+  }, [selectedFolder, selectedAccountId, selectedLabelId, activeSearch, clearCheckedEmails]);
+
+  useEffect(() => {
     if (loading || emails.length === 0) return;
     prefetchEmailDetails(emails.slice(0, 10));
   }, [emails, loading, prefetchEmailDetails]);
@@ -991,29 +1210,94 @@ export default function HomePage() {
       <div className="email-list-panel">
         <div className="panel-header">
           <h2>{panelTitle}</h2>
-          {accounts.length > 0 && !activeSearch && (
-            <EmailFilter
-              filter={emailFilter}
-              filterLabelId={filterLabelId}
-              labels={labels}
-              disabled={loading}
-              onChange={(next, labelId) => {
-                const wasUnread = emailFilter === "unread";
-                setEmailFilter(next);
-                const nextLabelId = next === "label" ? (labelId ?? null) : null;
-                setFilterLabelId(nextLabelId);
-                if (activeSearch) return;
-                if (wasUnread && next !== "unread") {
-                  loadEmails(
-                    selectedAccountId,
-                    selectedFolder,
-                    nextLabelId ?? selectedLabelId
-                  );
-                }
-              }}
-            />
-          )}
+          <div className="panel-header-actions">
+            {selectedFolder === "spam" &&
+              !activeSearch &&
+              !selectedLabelId &&
+              accounts.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-secondary clear-spam-btn"
+                  onClick={handleClearSpam}
+                  disabled={loading || actionLoading}
+                >
+                  Очистить СПАМ
+                </button>
+              )}
+            {accounts.length > 0 && !activeSearch && (
+              <EmailFilter
+                filter={emailFilter}
+                filterLabelId={filterLabelId}
+                labels={labels}
+                disabled={loading}
+                onChange={(next, labelId) => {
+                  const wasUnread = emailFilter === "unread";
+                  setEmailFilter(next);
+                  const nextLabelId = next === "label" ? (labelId ?? null) : null;
+                  setFilterLabelId(nextLabelId);
+                  if (activeSearch) return;
+                  if (wasUnread && next !== "unread") {
+                    loadEmails(
+                      selectedAccountId,
+                      selectedFolder,
+                      nextLabelId ?? selectedLabelId
+                    );
+                  }
+                }}
+              />
+            )}
+          </div>
         </div>
+        {checkedEmailKeys.size > 0 && (
+          <div className="email-bulk-actions">
+            <span className="email-bulk-actions-count">
+              Выбрано: {checkedEmailKeys.size}
+            </span>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={actionLoading}
+              onClick={() => runBulkAction("delete")}
+            >
+              Удалить
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={actionLoading || listFolderForDisplay === "archive"}
+              onClick={() => runBulkAction("archive")}
+            >
+              В архив
+            </button>
+            {listFolderForDisplay === "spam" ? (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={actionLoading}
+                onClick={() => runBulkAction("notSpam")}
+              >
+                Не спам
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={actionLoading}
+                onClick={() => runBulkAction("spam")}
+              >
+                В спам
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={actionLoading}
+              onClick={clearCheckedEmails}
+            >
+              Отмена
+            </button>
+          </div>
+        )}
         {errors.length > 0 && (
           <div style={{ padding: "8px 16px" }}>
             {errors.map((e, i) => (
@@ -1031,9 +1315,11 @@ export default function HomePage() {
           selectedUid={selectedEmail?.uid}
           selectedAccountId={selectedEmail?.accountId}
           selectedFolder={selectedEmail?.folder}
+          checkedKeys={checkedEmailKeys}
           emptyMessage={listEmptyMessage}
           onSelect={handleSelectEmail}
           onMarkUnread={(email) => runActionOnEmail(email, "markUnread")}
+          onToggleCheck={toggleCheckedEmail}
           onContextMenu={(email, e) => {
             e.preventDefault();
             setContextMenu({ email, x: e.clientX, y: e.clientY });

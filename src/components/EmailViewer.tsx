@@ -10,6 +10,8 @@ export type EmailAction =
   | "forward"
   | "delete"
   | "archive"
+  | "spam"
+  | "notSpam"
   | "markUnread"
   | "markRead";
 
@@ -109,11 +111,35 @@ export function EmailViewer({
 
   const emailFolder = (email.folder as MailFolderId) || folder;
   const inArchive = emailFolder === "archive";
+  const inSpam = emailFolder === "spam";
   const bodyLoading = loading && !email.html;
 
   return (
     <div className="email-viewer">
       <div className="email-toolbar">
+        <button
+          type="button"
+          className="toolbar-btn"
+          onClick={() => onAction("reply")}
+          disabled={actionLoading}
+          title="Ответить"
+        >
+          <ReplyIcon />
+          <span>Ответить</span>
+        </button>
+        <button
+          type="button"
+          className="toolbar-btn"
+          onClick={() => onAction("forward")}
+          disabled={actionLoading}
+          title="Переслать"
+        >
+          <ForwardIcon />
+          <span>Переслать</span>
+        </button>
+
+        <span className="toolbar-spacer" />
+
         <button
           type="button"
           className="toolbar-btn"
@@ -134,28 +160,15 @@ export function EmailViewer({
           <FolderIcon id="archive" size={18} />
           <span>В архив</span>
         </button>
-
-        <span className="toolbar-spacer" />
-
         <button
           type="button"
           className="toolbar-btn"
-          onClick={() => onAction("reply")}
+          onClick={() => onAction(inSpam ? "notSpam" : "spam")}
           disabled={actionLoading}
-          title="Ответить"
+          title={inSpam ? "Не спам" : "В спам"}
         >
-          <ReplyIcon />
-          <span>Ответить</span>
-        </button>
-        <button
-          type="button"
-          className="toolbar-btn"
-          onClick={() => onAction("forward")}
-          disabled={actionLoading}
-          title="Переслать"
-        >
-          <ForwardIcon />
-          <span>Переслать</span>
+          <FolderIcon id={inSpam ? "inbox" : "spam"} size={18} />
+          <span>{inSpam ? "Не спам" : "В спам"}</span>
         </button>
       </div>
 
