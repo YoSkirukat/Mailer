@@ -1,12 +1,9 @@
 import type { AccountWithPassword } from "./db";
-import {
-  assignLabel,
-  getLabelsForEmail,
-} from "./labels-db";
+import { assignLabel } from "./labels-db";
 import {
   folderIdFromActionValue,
-  recordFilterForwardExecuted,
-  wasFilterForwardExecuted,
+  recordFilterApplied,
+  wasFilterApplied,
 } from "./filters-db";
 import type { MailFolderId } from "./folders";
 import {
@@ -70,46 +67,6 @@ export function emailMatchesFilter(email: EmailSummary, filter: MailFilter): boo
   return filter.rules.some((rule) => matchRule(email, rule));
 }
 
-function hasPendingForward(
-  filter: MailFilter,
-  accountId: string,
-  folderId: MailFolderId,
-  uid: number
-): boolean {
-  return filter.actions.some(
-    (action) =>
-      action.type === "forward_to" &&
-      !wasFilterForwardExecuted(filter.id, accountId, folderId, uid)
-  );
-}
-
-function emailHasLabel(
-  accountId: string,
-  folderId: MailFolderId,
-  uid: number,
-  labelId: string
-): boolean {
-  return getLabelsForEmail({
-    accountId,
-    folder: folderId,
-    uid,
-  }).some((label) => label.id === labelId);
-}
-
-function filterNeedsLabel(
-  filter: MailFilter,
-  accountId: string,
-  folderId: MailFolderId,
-  uid: number
-): boolean {
-  return filter.actions.some((action) => {
-    if (action.type !== "set_label") return false;
-    const labelId = action.value.trim();
-    if (!labelId) return false;
-    return !emailHasLabel(accountId, folderId, uid, labelId);
-  });
-}
-
 function shouldRunFilter(
   email: EmailSummary,
   filter: MailFilter,
@@ -117,11 +74,7 @@ function shouldRunFilter(
   folderId: MailFolderId
 ): boolean {
   if (!emailMatchesFilter(email, filter)) return false;
-  if (!email.seen) return true;
-  return (
-    hasPendingForward(filter, accountId, folderId, email.uid) ||
-    filterNeedsLabel(filter, accountId, folderId, email.uid)
-  );
+  return !wasFilterApplied(filter.id, accountId, folderId, email.uid);
 }
 
 function buildForwardBody(
@@ -148,7 +101,6 @@ async function executeAction(
   account: AccountWithPassword,
   email: EmailSummary,
   action: MailFilterAction,
-  filter: MailFilter,
   folderId: MailFolderId,
   detail?: EmailDetail
 ): Promise<{ removed: boolean; markedSeen: boolean }> {
@@ -170,11 +122,6 @@ async function executeAction(
     case "forward_to": {
       const to = action.value.trim();
       if (!to) return { removed: false, markedSeen: false };
-      if (
-        wasFilterForwardExecuted(filter.id, account.id, folderId, email.uid)
-      ) {
-        return { removed: false, markedSeen: false };
-      }
 
       let messageDetail = detail;
       if (!messageDetail) {
@@ -196,20 +143,11 @@ async function executeAction(
           body,
         ].join("\n"),
       });
-      recordFilterForwardExecuted(
-        filter.id,
-        account.id,
-        folderId,
-        email.uid
-      );
       return { removed: false, markedSeen: false };
     }
     case "set_label": {
       const labelId = action.value.trim();
       if (!labelId) return { removed: false, markedSeen: false };
-      if (emailHasLabel(account.id, folderId, email.uid, labelId)) {
-        return { removed: false, markedSeen: false };
-      }
       assignLabel(
         { accountId: account.id, folder: folderId, uid: email.uid },
         labelId
@@ -233,9 +171,7 @@ async function executeFilterActions(
   let detail: EmailDetail | undefined;
 
   const needsForward = filter.actions.some(
-    (action) =>
-      action.type === "forward_to" &&
-      !wasFilterForwardExecuted(filter.id, account.id, folderId, email.uid)
+    (action) => action.type === "forward_to"
   );
 
   if (needsForward) {
@@ -255,24 +191,11 @@ async function executeFilterActions(
       if (action.type === "mark_read" && email.seen) {
         continue;
       }
-      if (
-        action.type === "forward_to" &&
-        wasFilterForwardExecuted(filter.id, account.id, folderId, email.uid)
-      ) {
-        continue;
-      }
-      if (
-        action.type === "set_label" &&
-        emailHasLabel(account.id, folderId, email.uid, action.value.trim())
-      ) {
-        continue;
-      }
 
       const result = await executeAction(
         account,
         email,
         action,
-        filter,
         folderId,
         detail
       );
@@ -286,6 +209,8 @@ async function executeFilterActions(
       console.error(`[filter] action ${action.type} failed:`, error);
     }
   }
+
+  recordFilterApplied(filter.id, account.id, folderId, email.uid);
 
   return { removed, markedSeen, errors };
 }

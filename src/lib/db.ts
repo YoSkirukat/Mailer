@@ -133,6 +133,23 @@ function migrateDb(database: Database.Database) {
       PRIMARY KEY (filter_id, account_id, folder, uid)
     )
   `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS mail_filter_applied_log (
+      filter_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      folder TEXT NOT NULL,
+      uid INTEGER NOT NULL,
+      applied_at TEXT NOT NULL,
+      PRIMARY KEY (filter_id, account_id, folder, uid),
+      FOREIGN KEY (filter_id) REFERENCES mail_filters(id) ON DELETE CASCADE
+    )
+  `);
+
+  database.exec(`
+    INSERT OR IGNORE INTO mail_filter_applied_log (filter_id, account_id, folder, uid, applied_at)
+    SELECT filter_id, account_id, folder, uid, forwarded_at FROM mail_filter_forward_log
+  `);
 }
 
 export function getDatabase(): Database.Database {

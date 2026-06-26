@@ -7,7 +7,10 @@ export const metadata: Metadata = {
   title: "Входящие",
   description: "Веб-клиент для работы со всеми почтовыми ящиками в одном окне",
   icons: {
-    icon: [{ url: FAVICON_DATA_URL, type: "image/svg+xml" }],
+    icon: [
+      { url: FAVICON_DATA_URL, type: "image/svg+xml", sizes: "32x32" },
+    ],
+    shortcut: [{ url: FAVICON_DATA_URL, type: "image/svg+xml" }],
   },
 };
 

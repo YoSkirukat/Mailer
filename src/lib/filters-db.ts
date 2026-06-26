@@ -231,7 +231,6 @@ export function updateMailFilter(
 
   db.prepare("DELETE FROM mail_filter_rules WHERE filter_id = ?").run(id);
   db.prepare("DELETE FROM mail_filter_actions WHERE filter_id = ?").run(id);
-  db.prepare("DELETE FROM mail_filter_forward_log WHERE filter_id = ?").run(id);
   insertRules(id, input.rules);
   insertActions(id, input.actions);
 
@@ -256,9 +255,10 @@ export function setMailFilterEnabled(
 }
 
 export function deleteMailFilter(id: string): boolean {
-  const result = getDatabase()
-    .prepare("DELETE FROM mail_filters WHERE id = ?")
-    .run(id);
+  const db = getDatabase();
+  db.prepare("DELETE FROM mail_filter_applied_log WHERE filter_id = ?").run(id);
+  db.prepare("DELETE FROM mail_filter_forward_log WHERE filter_id = ?").run(id);
+  const result = db.prepare("DELETE FROM mail_filters WHERE id = ?").run(id);
   return result.changes > 0;
 }
 
@@ -266,7 +266,7 @@ export function folderIdFromActionValue(value: string): MailFolderId | null {
   return isValidFolderId(value) ? value : null;
 }
 
-export function wasFilterForwardExecuted(
+export function wasFilterApplied(
   filterId: string,
   accountId: string,
   folder: string,
@@ -274,14 +274,14 @@ export function wasFilterForwardExecuted(
 ): boolean {
   const row = getDatabase()
     .prepare(
-      `SELECT 1 FROM mail_filter_forward_log
+      `SELECT 1 FROM mail_filter_applied_log
        WHERE filter_id = ? AND account_id = ? AND folder = ? AND uid = ?`
     )
     .get(filterId, accountId, folder, uid);
   return Boolean(row);
 }
 
-export function recordFilterForwardExecuted(
+export function recordFilterApplied(
   filterId: string,
   accountId: string,
   folder: string,
@@ -289,8 +289,8 @@ export function recordFilterForwardExecuted(
 ): void {
   getDatabase()
     .prepare(
-      `INSERT OR IGNORE INTO mail_filter_forward_log
-       (filter_id, account_id, folder, uid, forwarded_at)
+      `INSERT OR IGNORE INTO mail_filter_applied_log
+       (filter_id, account_id, folder, uid, applied_at)
        VALUES (?, ?, ?, ?, ?)`
     )
     .run(filterId, accountId, folder, uid, new Date().toISOString());
