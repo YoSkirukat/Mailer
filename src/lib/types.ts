@@ -10,6 +10,21 @@ export interface MailLabelInput {
   color: string;
 }
 
+export interface MailTemplate {
+  id: string;
+  name: string;
+  subject: string;
+  html: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MailTemplateInput {
+  name: string;
+  subject?: string;
+  html: string;
+}
+
 export type FilterMatchMode = "all" | "any" | "all_messages";
 
 export type FilterRuleField = "from" | "to" | "subject" | "body";
@@ -40,6 +55,7 @@ export interface MailFilter {
   id: string;
   name: string;
   enabled: boolean;
+  baselinePending: boolean;
   matchMode: FilterMatchMode;
   rules: MailFilterRule[];
   actions: MailFilterAction[];
@@ -117,6 +133,8 @@ export interface EmailAttachment {
 export interface EmailDetail extends EmailSummary {
   to: string;
   cc?: string;
+  replyToHeader?: string;
+  originalFromHeader?: string;
   text?: string;
   html?: string;
 }

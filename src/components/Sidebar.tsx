@@ -58,7 +58,7 @@ export function Sidebar({
           type="button"
           className={`sidebar-refresh-btn ${refreshing ? "spinning" : ""}`}
           onClick={onRefresh}
-          disabled={accounts.length === 0 || refreshing}
+          disabled={accounts.length === 0}
           title="Обновить почту"
         >
           <svg

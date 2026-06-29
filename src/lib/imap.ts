@@ -15,7 +15,9 @@ import {
   type BodyStructureNode,
 } from "./attachments";
 import { isImapSecure, tlsOptions } from "./mail-config";
+import { extractEmailAddress } from "./email-utils";
 import type { EmailDetail, EmailSummary, EmailAttachment } from "./types";
+import type { AddressObject, Headers, ParsedMail } from "mailparser";
 
 const IMAP_MAX_CONCURRENT = 3;
 let imapInFlight = 0;
@@ -180,6 +182,82 @@ function formatAddressList(
   return list.map((a) => formatAddress(a)).filter(Boolean).join(", ");
 }
 
+const ORIGINAL_FROM_HEADER_KEYS = [
+  "x-original-from",
+  "x-original-sender",
+  "x-real-from",
+  "x-forwarded-from",
+  "resent-from",
+  "x-mru-orig-from",
+];
+
+function headerFirstValue(headers: Headers, name: string): string | undefined {
+  const raw = headers.get(name.toLowerCase());
+  if (!raw) return undefined;
+  const value = Array.isArray(raw) ? raw[raw.length - 1] : raw;
+  return typeof value === "string" ? value.trim() : undefined;
+}
+
+function formatParsedAddressField(
+  field: AddressObject | AddressObject[] | undefined
+): string | undefined {
+  if (!field) return undefined;
+  const obj = Array.isArray(field) ? field[0] : field;
+  if (obj.text?.trim()) return obj.text.trim();
+  const first = obj.value?.[0];
+  if (!first?.address) return undefined;
+  return first.name ? `${first.name} <${first.address}>` : first.address;
+}
+
+function extractOriginalFromHeaders(headers: Headers): string | undefined {
+  for (const key of ORIGINAL_FROM_HEADER_KEYS) {
+    const value = headerFirstValue(headers, key);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+async function extractFromRfc822Attachments(
+  parsed: ParsedMail
+): Promise<string | undefined> {
+  for (const attachment of parsed.attachments ?? []) {
+    if (!attachment.content) continue;
+    const contentType = (attachment.contentType || "").toLowerCase();
+    if (!contentType.startsWith("message/rfc822")) continue;
+    try {
+      const nested = await simpleParser(attachment.content);
+      const from = formatParsedAddressField(nested.from);
+      if (from) return from;
+    } catch {
+      /* вложенное письмо не разобралось */
+    }
+  }
+  return undefined;
+}
+
+async function extractReplyMetadata(
+  parsed: ParsedMail,
+  envelopeFrom: string
+): Promise<{
+  replyToHeader?: string;
+  originalFromHeader?: string;
+}> {
+  const replyToHeader = formatParsedAddressField(parsed.replyTo);
+  let originalFromHeader = extractOriginalFromHeaders(parsed.headers);
+  if (!originalFromHeader) {
+    originalFromHeader = await extractFromRfc822Attachments(parsed);
+  }
+  const mimeFrom = formatParsedAddressField(parsed.from);
+  if (
+    mimeFrom &&
+    extractEmailAddress(mimeFrom).toLowerCase() !==
+      extractEmailAddress(envelopeFrom).toLowerCase()
+  ) {
+    originalFromHeader = originalFromHeader || mimeFrom;
+  }
+  return { replyToHeader, originalFromHeader };
+}
+
 async function buildSummaryFromMessage(
   account: AccountWithPassword,
   folderId: MailFolderId,
@@ -279,6 +357,16 @@ export async function countUnreadByUids(
     }
 
     return count;
+  });
+}
+
+export async function listMailboxUids(
+  account: AccountWithPassword,
+  folderId: MailFolderId
+): Promise<number[]> {
+  return withMailbox(account, folderId, async (client) => {
+    const uids = await client.search({ all: true }, { uid: true });
+    return Array.isArray(uids) ? uids : [];
   });
 }
 
@@ -535,9 +623,11 @@ async function buildEmailDetailFromMessage(
 
   const parsed = await simpleParser(message.source);
   const isSent = folderId === "sent";
+  const envelopeFrom = formatAddress(message.envelope?.from?.[0]);
   const fromStr = isSent
     ? formatAddressList(message.envelope?.to) || "Неизвестный"
-    : formatAddress(message.envelope?.from?.[0]);
+    : envelopeFrom;
+  const replyMetadata = await extractReplyMetadata(parsed, envelopeFrom);
 
   const toList = formatAddressList(message.envelope?.to);
 
@@ -559,8 +649,10 @@ async function buildEmailDetailFromMessage(
     accountName: account.name,
     accountColor: account.color,
     subject: message.envelope?.subject || "(без темы)",
-    from: isSent ? fromStr : formatAddress(message.envelope?.from?.[0]),
+    from: isSent ? fromStr : envelopeFrom,
     to: toList,
+    replyToHeader: replyMetadata.replyToHeader,
+    originalFromHeader: replyMetadata.originalFromHeader,
     date: message.envelope?.date?.toISOString() || new Date().toISOString(),
     seen,
     answered: message.flags?.has("\\Answered") ?? false,
@@ -678,6 +770,28 @@ export async function deleteEmail(
 ): Promise<void> {
   await withMailbox(account, folderId, async (client) => {
     await client.messageDelete(uid, { uid: true });
+  });
+}
+
+export async function appendToSentFolder(
+  account: AccountWithPassword,
+  rawMessage: Buffer | string
+): Promise<void> {
+  await withImapSlot(async () => {
+    const client = await connectAccount(account);
+    try {
+      const sentPath = await resolveMailbox(client, "sent");
+      if (!sentPath) {
+        throw new Error("Папка «Отправленные» не найдена на сервере");
+      }
+
+      const appended = await client.append(sentPath, rawMessage, ["\\Seen"], new Date());
+      if (!appended) {
+        throw new Error("Не удалось сохранить письмо в отправленные");
+      }
+    } finally {
+      await safeLogout(client);
+    }
   });
 }
 

@@ -68,6 +68,11 @@ function migrateDb(database: Database.Database) {
       "ALTER TABLE accounts ADD COLUMN from_name TEXT NOT NULL DEFAULT ''"
     );
   }
+  if (!hasColumn(database, "mail_filters", "baseline_pending")) {
+    database.exec(
+      "ALTER TABLE mail_filters ADD COLUMN baseline_pending INTEGER NOT NULL DEFAULT 0"
+    );
+  }
 
   database.exec(`
     CREATE TABLE IF NOT EXISTS labels (
@@ -157,6 +162,17 @@ function migrateDb(database: Database.Database) {
     SELECT fl.filter_id, fl.account_id, fl.folder, fl.uid, fl.forwarded_at
     FROM mail_filter_forward_log fl
     INNER JOIN mail_filters mf ON mf.id = fl.filter_id
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS mail_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      subject TEXT NOT NULL DEFAULT '',
+      html TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
   `);
 }
 

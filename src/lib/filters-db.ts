@@ -37,6 +37,7 @@ function rowToFilter(
     id: row.id as string,
     name: row.name as string,
     enabled: Boolean(row.enabled),
+    baselinePending: Boolean(row.baseline_pending),
     matchMode: row.match_mode as FilterMatchMode,
     rules,
     actions,
@@ -181,7 +182,23 @@ export function listMailFilters(): MailFilter[] {
 }
 
 export function listEnabledMailFilters(): MailFilter[] {
-  return listMailFilters().filter((filter) => filter.enabled);
+  return listMailFilters().filter(
+    (filter) => filter.enabled && !filter.baselinePending
+  );
+}
+
+export function setMailFilterBaselinePending(
+  id: string,
+  pending: boolean
+): MailFilter | null {
+  const existing = getFilterById(id);
+  if (!existing) return null;
+
+  getDatabase()
+    .prepare("UPDATE mail_filters SET baseline_pending = ? WHERE id = ?")
+    .run(pending ? 1 : 0, id);
+
+  return getFilterById(id);
 }
 
 export function createMailFilter(input: MailFilterInput): MailFilter {
@@ -196,7 +213,7 @@ export function createMailFilter(input: MailFilterInput): MailFilter {
 
   getDatabase()
     .prepare(
-      "INSERT INTO mail_filters (id, name, enabled, match_mode, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO mail_filters (id, name, enabled, match_mode, sort_order, baseline_pending, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)"
     )
     .run(
       id,
@@ -226,7 +243,7 @@ export function updateMailFilter(
   const db = getDatabase();
 
   db.prepare(
-    "UPDATE mail_filters SET name = ?, enabled = ?, match_mode = ?, updated_at = ? WHERE id = ?"
+    "UPDATE mail_filters SET name = ?, enabled = ?, match_mode = ?, baseline_pending = 1, updated_at = ? WHERE id = ?"
   ).run(input.name.trim(), input.enabled ? 1 : 0, input.matchMode, now, id);
 
   db.prepare("DELETE FROM mail_filter_rules WHERE filter_id = ?").run(id);
@@ -303,15 +320,33 @@ export function recordFilterApplied(
   folder: string,
   uid: number
 ): void {
+  recordFilterAppliedBatch(filterId, [{ accountId, folder, uid }]);
+}
+
+export function recordFilterAppliedBatch(
+  filterId: string,
+  items: Array<{ accountId: string; folder: string; uid: number }>
+): void {
+  if (items.length === 0) return;
+
   const db = getDatabase();
   const filter = db
     .prepare("SELECT 1 FROM mail_filters WHERE id = ?")
     .get(filterId);
   if (!filter) return;
 
-  db.prepare(
+  const now = new Date().toISOString();
+  const stmt = db.prepare(
     `INSERT OR IGNORE INTO mail_filter_applied_log
      (filter_id, account_id, folder, uid, applied_at)
      VALUES (?, ?, ?, ?, ?)`
-  ).run(filterId, accountId, folder, uid, new Date().toISOString());
+  );
+  const insertMany = db.transaction(
+    (rows: Array<{ accountId: string; folder: string; uid: number }>) => {
+      for (const row of rows) {
+        stmt.run(filterId, row.accountId, row.folder, row.uid, now);
+      }
+    }
+  );
+  insertMany(items);
 }

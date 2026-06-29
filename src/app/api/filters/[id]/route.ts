@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import {
   deleteMailFilter,
+  setMailFilterBaselinePending,
   setMailFilterEnabled,
   updateMailFilter,
 } from "@/lib/filters-db";
+import { scheduleFilterBaseline } from "@/lib/filter-engine";
 import type { MailFilterInput } from "@/lib/types";
 
 interface RouteContext {
@@ -21,11 +23,21 @@ export async function PATCH(request: Request, context: RouteContext) {
       body.enabled !== undefined &&
       Object.keys(body).length === 1
     ) {
-      const filter = setMailFilterEnabled(id, body.enabled);
+      if (!body.enabled) {
+        const filter = setMailFilterEnabled(id, false);
+        if (!filter) {
+          return NextResponse.json({ error: "Фильтр не найден" }, { status: 404 });
+        }
+        return NextResponse.json(filter);
+      }
+
+      const filter = setMailFilterEnabled(id, true);
       if (!filter) {
         return NextResponse.json({ error: "Фильтр не найден" }, { status: 404 });
       }
-      return NextResponse.json(filter);
+      const withPending = setMailFilterBaselinePending(id, true);
+      scheduleFilterBaseline(id);
+      return NextResponse.json(withPending ?? filter);
     }
 
     if (
@@ -45,6 +57,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     if (!filter) {
       return NextResponse.json({ error: "Фильтр не найден" }, { status: 404 });
     }
+    scheduleFilterBaseline(id);
     return NextResponse.json(filter);
   } catch (error) {
     return NextResponse.json(

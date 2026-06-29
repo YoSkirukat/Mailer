@@ -12,14 +12,15 @@ import { LabelManagerModal } from "@/components/LabelManagerModal";
 import { TabTitle } from "@/components/TabTitle";
 import { Sidebar } from "@/components/Sidebar";
 import {
-  buildForwardBody,
-  buildComposeText,
-  buildReplyQuote,
-  replaceComposeSignature,
-  extractEmailAddress,
   forwardSubject,
   replySubject,
+  resolveReplyRecipient,
 } from "@/lib/email-utils";
+import {
+  buildComposeHtml,
+  buildForwardHtml,
+  buildReplyQuoteHtml,
+} from "@/lib/html-utils";
 import { getFolderLabel, EMPTY_UNREAD_COUNTS, type MailFolderId } from "@/lib/folders";
 import { emailDetailKey, summaryToPartialDetail } from "@/lib/email-detail-utils";
 import {
@@ -57,7 +58,7 @@ const emptyDraft = (accountId: string, accounts: MailAccount[]): ComposeDraft =>
     accountId,
     to: "",
     subject: "",
-    text: buildComposeText(account?.signature),
+    html: buildComposeHtml(account?.signature),
     title: "Новое письмо",
   };
 };
@@ -70,10 +71,15 @@ export default function HomePage() {
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [selectedEmail, setSelectedEmail] = useState<EmailDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadingEmail, setLoadingEmail] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [composeDraft, setComposeDraft] = useState<ComposeDraft | null>(null);
+  const [toast, setToast] = useState<{
+    message: string;
+    type: "success" | "error";
+  } | null>(null);
   const [labels, setLabels] = useState<MailLabel[]>([]);
   const [showLabelManager, setShowLabelManager] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
@@ -107,6 +113,7 @@ export default function HomePage() {
   const knownInboxKeysRef = useRef<Set<string>>(new Set());
   const inboxSnapshotReadyRef = useRef(false);
   const backgroundTickInFlightRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
   const selectedFolderRef = useRef(selectedFolder);
   selectedFolderRef.current = selectedFolder;
   const selectedAccountIdRef = useRef(selectedAccountId);
@@ -305,28 +312,41 @@ export default function HomePage() {
     async (
       accountId?: string | null,
       refreshCounts = true,
-      options?: { silent?: boolean }
+      options?: {
+        silent?: boolean;
+        folder?: MailFolderId;
+        labelId?: string | null;
+        search?: string | null;
+        unreadOnly?: boolean;
+      }
     ): Promise<EmailSummary[] | undefined> => {
       const silent = options?.silent ?? false;
       const acc = accountId !== undefined ? accountId : selectedAccountId;
+      const folder = options?.folder ?? selectedFolder;
+      const labelId =
+        options?.labelId !== undefined ? options.labelId : selectedLabelId;
+      const search =
+        options?.search !== undefined ? options.search : activeSearchRef.current;
+      const searchQuery = (search ?? "").trim();
       const unreadOnly =
-        emailFilter === "unread" && !activeSearchRef.current && !selectedLabelId;
+        options?.unreadOnly ??
+        (emailFilter === "unread" && !searchQuery && !labelId);
       let emails: EmailSummary[] | undefined;
-      if (activeSearchRef.current) {
+      if (searchQuery) {
         emails = await loadEmails(
           acc,
-          selectedFolder,
-          selectedLabelId,
-          activeSearchRef.current,
+          folder,
+          labelId,
+          searchQuery,
           false,
           { silent }
         );
-      } else if (selectedLabelId) {
-        emails = await loadEmails(acc, selectedFolder, selectedLabelId, undefined, false, {
+      } else if (labelId) {
+        emails = await loadEmails(acc, folder, labelId, undefined, false, {
           silent,
         });
       } else {
-        emails = await loadEmails(acc, selectedFolder, null, null, unreadOnly, { silent });
+        emails = await loadEmails(acc, folder, null, null, unreadOnly, { silent });
       }
       if (refreshCounts) {
         refreshSidebarCounts(acc);
@@ -334,6 +354,26 @@ export default function HomePage() {
       return emails;
     },
     [loadEmails, selectedAccountId, selectedFolder, selectedLabelId, refreshSidebarCounts, emailFilter]
+  );
+
+  const refreshInBackground = useCallback(
+    async (overrides?: {
+      folder?: MailFolderId;
+      labelId?: string | null;
+      search?: string | null;
+      unreadOnly?: boolean;
+    }) => {
+      if (refreshInFlightRef.current) return;
+      refreshInFlightRef.current = true;
+      setRefreshing(true);
+      try {
+        await refreshList(undefined, true, { silent: true, ...overrides });
+      } finally {
+        refreshInFlightRef.current = false;
+        setRefreshing(false);
+      }
+    },
+    [refreshList]
   );
 
   const refreshListRef = useRef(refreshList);
@@ -434,6 +474,12 @@ export default function HomePage() {
   }, [accounts.length]);
 
   useEffect(() => {
+    if (!toast) return;
+    const timerId = window.setTimeout(() => setToast(null), 3200);
+    return () => window.clearTimeout(timerId);
+  }, [toast]);
+
+  useEffect(() => {
     if (emailFilter !== "unread" || activeSearch || selectedLabelId) return;
     loadEmails(selectedAccountId, selectedFolder, null, null, true);
   }, [
@@ -461,11 +507,12 @@ export default function HomePage() {
   const handleComposeTo = (to: string) => {
     const accountId =
       selectedEmail?.accountId || selectedAccountId || accounts[0]?.id || "";
+    const account = accounts.find((item) => item.id === accountId);
     setComposeDraft({
       accountId,
       to,
       subject: "",
-      text: "",
+      html: buildComposeHtml(account?.signature),
       title: "Новое письмо",
     });
   };
@@ -483,6 +530,12 @@ export default function HomePage() {
   };
 
   const handleSelectFolder = (folder: MailFolderId) => {
+    const alreadyInInbox =
+      folder === "inbox" &&
+      selectedFolder === "inbox" &&
+      selectedLabelId === null &&
+      !activeSearchRef.current.trim();
+
     detailCacheRef.current.clear();
     prefetchInFlightRef.current.clear();
     setSelectedFolder(folder);
@@ -496,7 +549,15 @@ export default function HomePage() {
       setEmailFilter("all");
       setFilterLabelId(null);
       setUnreadListMode(false);
-      loadEmails(selectedAccountId, folder, null, "");
+      if (!alreadyInInbox) {
+        setEmails([]);
+      }
+      void refreshInBackground({
+        folder: "inbox",
+        labelId: null,
+        search: "",
+        unreadOnly: false,
+      });
       return;
     }
 
@@ -918,16 +979,16 @@ export default function HomePage() {
       return;
     }
     const folder = getEmailFolder(summary);
-    const replyTo =
-      folder === "sent"
-        ? extractEmailAddress(detail.to)
-        : extractEmailAddress(detail.from);
+    const replyTo = resolveReplyRecipient(
+      { ...detail, folder },
+      { ownAddresses: accounts.map((item) => item.email) }
+    );
     const account = accounts.find((item) => item.id === detail.accountId);
     setComposeDraft({
       accountId: detail.accountId,
       to: replyTo,
       subject: replySubject(detail.subject),
-      text: buildComposeText(account?.signature, buildReplyQuote(detail)),
+      html: buildComposeHtml(account?.signature, buildReplyQuoteHtml(detail)),
       title: "Ответить",
       replyTo: {
         accountId: summary.accountId,
@@ -1040,7 +1101,7 @@ export default function HomePage() {
         accountId: selectedEmail.accountId,
         to: "",
         subject: forwardSubject(selectedEmail.subject),
-        text: buildForwardBody(selectedEmail),
+        html: buildForwardHtml(selectedEmail),
         title: "Переслать",
       });
       return;
@@ -1212,8 +1273,8 @@ export default function HomePage() {
         selectedAccountId={selectedAccountId}
         unreadCounts={unreadCounts}
         accountUnreadCounts={accountUnreadCounts}
-        refreshing={loading}
-        onRefresh={() => refreshList()}
+        refreshing={refreshing}
+        onRefresh={() => void refreshInBackground()}
         onSelectFolder={handleSelectFolder}
         onSelectLabel={handleSelectLabel}
         onSelectAccount={handleSelectAccount}
@@ -1383,6 +1444,7 @@ export default function HomePage() {
           onClose={() => setComposeDraft(null)}
           onSent={() => {
             const replied = composeDraft?.replyTo;
+            setToast({ message: "Письмо отправлено", type: "success" });
             setComposeDraft(null);
             if (replied) {
               setEmails((prev) =>
@@ -1400,9 +1462,25 @@ export default function HomePage() {
                 setSelectedEmail({ ...selectedEmail, answered: true });
               }
             }
-            refreshList();
+            void refreshList(undefined, true, { silent: true });
+          }}
+          onSendError={(message) => {
+            setToast({
+              message: message || "Не удалось отправить письмо",
+              type: "error",
+            });
           }}
         />
+      )}
+
+      {toast && (
+        <div
+          className={`app-toast app-toast--${toast.type}`}
+          role="status"
+          aria-live="polite"
+        >
+          {toast.message}
+        </div>
       )}
 
       {showLabelManager && (

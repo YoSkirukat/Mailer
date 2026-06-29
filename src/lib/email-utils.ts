@@ -6,6 +6,91 @@ export function extractEmailAddress(from: string): string {
   return from;
 }
 
+const FORWARD_BODY_MARKER =
+  /(?:----------\s*Пересланное сообщение|----------\s*Forwarded message|--------\s*Пересланное письмо|Begin forwarded message)/i;
+
+const FORWARD_FROM_LINE =
+  /(?:^|[\n\r])\s*(?:>|&gt;)?\s*(?:От|From)\s*:\s*(.+?)(?:\r?\n|$)/gi;
+
+/** Ищет адрес исходного отправителя в теле пересланного письма */
+export function parseForwardedOriginalSender(
+  content: string,
+  ownAddresses: Set<string> = new Set()
+): string | null {
+  const text = content.trim();
+  if (!text) return null;
+
+  const markerMatch = FORWARD_BODY_MARKER.exec(text);
+  const searchText = markerMatch ? text.slice(markerMatch.index) : text;
+
+  const matches: string[] = [];
+  let match: RegExpExecArray | null;
+  const re = new RegExp(FORWARD_FROM_LINE.source, FORWARD_FROM_LINE.flags);
+  while ((match = re.exec(searchText)) !== null) {
+    matches.push(match[1].trim());
+  }
+
+  for (const line of matches) {
+    const addr = extractEmailAddress(line);
+    if (!addr.includes("@")) continue;
+    if (ownAddresses.has(addr.toLowerCase())) continue;
+    return line;
+  }
+
+  return null;
+}
+
+/** Адрес для ответа: учитывает пересылку и заголовки Reply-To / Original-From */
+export function resolveReplyRecipient(
+  email: {
+    from: string;
+    to: string;
+    folder?: string;
+    replyToHeader?: string;
+    originalFromHeader?: string;
+    text?: string;
+    html?: string;
+  },
+  options?: { ownAddresses?: string[] }
+): string {
+  if (email.folder === "sent") {
+    const firstTo = email.to.split(",")[0]?.trim();
+    return extractEmailAddress(firstTo || email.to);
+  }
+
+  const own = new Set(
+    (options?.ownAddresses ?? [])
+      .map((address) => extractEmailAddress(address).toLowerCase())
+      .filter(Boolean)
+  );
+  const fromEmail = extractEmailAddress(email.from).toLowerCase();
+  const looksForwarded =
+    own.has(fromEmail) ||
+    Boolean(email.originalFromHeader) ||
+    Boolean(email.replyToHeader);
+
+  const bodyText = [email.text, email.html?.replace(/<[^>]+>/g, " ")]
+    .filter(Boolean)
+    .join("\n");
+  const bodyFrom = parseForwardedOriginalSender(bodyText, own);
+
+  const candidates = [
+    email.replyToHeader,
+    email.originalFromHeader,
+    bodyFrom,
+    email.from,
+  ].filter((value): value is string => Boolean(value?.trim()));
+
+  for (const candidate of candidates) {
+    const addr = extractEmailAddress(candidate);
+    if (!addr.includes("@")) continue;
+    if (looksForwarded && own.has(addr.toLowerCase())) continue;
+    return addr;
+  }
+
+  return extractEmailAddress(email.from);
+}
+
 /** Разбирает строку адреса на имя и email */
 export function parseEmailAddress(value: string): {
   name: string;

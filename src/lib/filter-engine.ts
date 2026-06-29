@@ -1,20 +1,26 @@
 import type { AccountWithPassword } from "./db";
+import { getAccountWithPassword, listAccounts } from "./db";
 import { assignLabel } from "./labels-db";
 import {
   folderIdFromActionValue,
   recordFilterApplied,
+  recordFilterAppliedBatch,
+  setMailFilterBaselinePending,
   wasFilterApplied,
 } from "./filters-db";
 import type { MailFolderId } from "./folders";
 import {
   deleteEmail,
+  downloadAttachment,
   fetchEmail,
   fetchSummariesByUids,
+  listMailboxUids,
   moveEmail,
   setEmailSeen,
 } from "./imap";
-import { sendMail } from "./smtp";
+import { sendMail, type SendMailAttachment } from "./smtp";
 import type {
+  EmailAttachment,
   EmailDetail,
   EmailSummary,
   MailFilter,
@@ -91,6 +97,35 @@ function buildForwardBody(
   );
 }
 
+async function loadForwardAttachments(
+  account: AccountWithPassword,
+  folderId: MailFolderId,
+  uid: number,
+  attachments: EmailAttachment[] = []
+): Promise<SendMailAttachment[]> {
+  if (attachments.length === 0) return [];
+
+  const files = await Promise.all(
+    attachments.map((attachment) =>
+      downloadAttachment(
+        account,
+        folderId,
+        uid,
+        attachment.partId,
+        attachment.filename
+      )
+    )
+  );
+
+  return files
+    .filter((file): file is NonNullable<typeof file> => file !== null)
+    .map((file) => ({
+      filename: file.filename,
+      content: file.content,
+      contentType: file.contentType,
+    }));
+}
+
 interface ActionResult {
   removed: boolean;
   markedSeen: boolean;
@@ -130,6 +165,12 @@ async function executeAction(
       }
 
       const body = buildForwardBody(email, messageDetail);
+      const attachments = await loadForwardAttachments(
+        account,
+        folderId,
+        email.uid,
+        messageDetail?.attachments
+      );
       await sendMail(account, {
         to,
         subject: `Fwd: ${email.subject}`,
@@ -142,6 +183,7 @@ async function executeAction(
           ``,
           body,
         ].join("\n"),
+        attachments,
       });
       return { removed: false, markedSeen: false };
     }
@@ -296,4 +338,54 @@ export async function applyMailFiltersForUid(
     filters
   );
   return { errors: result.errors };
+}
+
+/** Помечает все текущие письма во входящих как уже обработанные фильтром (без действий). */
+export async function baselineFilterInbox(filterId: string): Promise<void> {
+  const accounts = listAccounts();
+
+  const results = await Promise.allSettled(
+    accounts.map(async (account) => {
+      const full = getAccountWithPassword(account.id);
+      if (!full) return [] as Array<{ accountId: string; folder: string; uid: number }>;
+
+      const uids = await listMailboxUids(full, "inbox");
+      return uids.map((uid) => ({
+        accountId: account.id,
+        folder: "inbox",
+        uid,
+      }));
+    })
+  );
+
+  const entries = results.flatMap((result) =>
+    result.status === "fulfilled" ? result.value : []
+  );
+
+  for (const result of results) {
+    if (result.status === "rejected") {
+      console.error("[filter] не удалось получить входящие:", result.reason);
+    }
+  }
+
+  recordFilterAppliedBatch(filterId, entries);
+}
+
+const baselineInFlight = new Set<string>();
+
+/** Запускает baseline в фоне, не блокируя ответ API. */
+export function scheduleFilterBaseline(filterId: string): void {
+  if (baselineInFlight.has(filterId)) return;
+  baselineInFlight.add(filterId);
+
+  void (async () => {
+    try {
+      await baselineFilterInbox(filterId);
+    } catch (error) {
+      console.error("[filter] baseline failed:", error);
+    } finally {
+      setMailFilterBaselinePending(filterId, false);
+      baselineInFlight.delete(filterId);
+    }
+  })();
 }

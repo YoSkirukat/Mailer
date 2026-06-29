@@ -1,12 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { AccountForm } from "@/components/AccountForm";
+import {
+  ComposeEditor,
+  type ComposeEditorHandle,
+} from "@/components/ComposeEditor";
 import { FilterSettingsPanel } from "@/components/FilterSettingsPanel";
+import { TemplateSettingsPanel } from "@/components/TemplateSettingsPanel";
+import { isHtmlEmpty, richTextToEditorHtml } from "@/lib/html-utils";
 import { LABEL_COLORS } from "@/lib/label-colors";
 import type { MailAccount } from "@/lib/types";
 
-type SettingsTab = "mailboxes" | "filters";
+type SettingsTab = "mailboxes" | "filters" | "templates";
 type MailboxesView = "list" | "add" | "edit";
 
 interface SettingsModalProps {
@@ -23,13 +29,15 @@ export function SettingsModal({
   const [tab, setTab] = useState<SettingsTab>("mailboxes");
   const [view, setView] = useState<MailboxesView>("list");
   const [filtersPanelTitle, setFiltersPanelTitle] = useState("Фильтрация");
+  const [templatesPanelTitle, setTemplatesPanelTitle] = useState("Шаблоны");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [fromName, setFromName] = useState("");
   const [color, setColor] = useState<string>(LABEL_COLORS[5]);
-  const [signature, setSignature] = useState("");
+  const [signatureHtml, setSignatureHtml] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const signatureEditorRef = useRef<ComposeEditorHandle>(null);
 
   const editingAccount = accounts.find((account) => account.id === editingId);
 
@@ -38,7 +46,7 @@ export function SettingsModal({
     setName("");
     setFromName("");
     setColor(LABEL_COLORS[5]);
-    setSignature("");
+    setSignatureHtml("");
     setError("");
     setView("list");
   };
@@ -48,7 +56,7 @@ export function SettingsModal({
     setName(account.name ?? "");
     setFromName(account.fromName ?? "");
     setColor(account.color || LABEL_COLORS[5]);
-    setSignature(account.signature ?? "");
+    setSignatureHtml(richTextToEditorHtml(account.signature ?? ""));
     setError("");
     setView("edit");
   };
@@ -59,6 +67,9 @@ export function SettingsModal({
     setError("");
     setLoading(true);
     try {
+      const signatureRaw =
+        signatureEditorRef.current?.getHtml() ?? signatureHtml;
+      const signature = isHtmlEmpty(signatureRaw) ? "" : signatureRaw;
       const res = await fetch(`/api/accounts/${editingId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -132,6 +143,16 @@ export function SettingsModal({
             >
               Фильтрация
             </button>
+            <button
+              type="button"
+              className={`settings-tab ${tab === "templates" ? "active" : ""}`}
+              onClick={() => {
+                setTab("templates");
+                resetEditForm();
+              }}
+            >
+              Шаблоны
+            </button>
           </nav>
         </aside>
 
@@ -140,11 +161,13 @@ export function SettingsModal({
             <h3>
               {tab === "filters"
                 ? filtersPanelTitle
-                : view === "add"
-                  ? "Добавить ящик"
-                  : view === "edit"
-                    ? "Редактировать ящик"
-                    : "Почтовые ящики"}
+                : tab === "templates"
+                  ? templatesPanelTitle
+                  : view === "add"
+                    ? "Добавить ящик"
+                    : view === "edit"
+                      ? "Редактировать ящик"
+                      : "Почтовые ящики"}
             </h3>
             <button
               type="button"
@@ -162,6 +185,10 @@ export function SettingsModal({
 
           {tab === "filters" && (
             <FilterSettingsPanel onTitleChange={setFiltersPanelTitle} />
+          )}
+
+          {tab === "templates" && (
+            <TemplateSettingsPanel onTitleChange={setTemplatesPanelTitle} />
           )}
 
           {tab === "mailboxes" && view === "list" && (
@@ -289,17 +316,19 @@ export function SettingsModal({
                 </div>
               </div>
 
-              <div className="form-group">
+              <div className="form-group template-editor-group">
                 <label>Подпись для новых писем</label>
-                <textarea
-                  value={signature ?? ""}
-                  onChange={(event) => setSignature(event.target.value)}
-                  placeholder="С уважением,&#10;Иван Иванов"
-                  rows={5}
-                />
+                <div className="template-editor-wrap">
+                  <ComposeEditor
+                    key={editingId ?? "signature"}
+                    ref={signatureEditorRef}
+                    initialHtml={signatureHtml}
+                    onChange={setSignatureHtml}
+                  />
+                </div>
                 <p className="form-hint">
                   Подпись автоматически добавляется в новые письма и ответы с
-                  этого ящика
+                  этого ящика. Форматирование сохраняется.
                 </p>
               </div>
 

@@ -23,12 +23,11 @@ export const MAIL_FOLDERS: MailFolder[] = [
     id: "sent",
     label: "Отправленные",
     candidates: [
+      "Отправленные",
       "Sent",
       "Sent Items",
       "Sent Messages",
       "Sent Mail",
-      "Исходящие",
-      "Отправленные",
       "[Gmail]/Sent Mail",
     ],
   },

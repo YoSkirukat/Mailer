@@ -259,41 +259,47 @@ export function EmailViewer({
                   contentType: att.contentType,
                 });
                 if (att.size) params.set("size", String(att.size));
+                const downloadHref = `/api/emails/attachments?${params.toString()}`;
 
                 return (
-                  <li key={att.partId}>
-                    {canPreview ? (
-                      <button
-                        type="button"
-                        className="email-attachment-item"
-                        onClick={() =>
-                          openAttachmentViewer(
-                            `/view?${params.toString()}`,
-                            `mailer-view-${email.uid}-${att.partId}`
-                          )
-                        }
-                      >
-                        <span className="email-attachment-name">{att.filename}</span>
-                        {att.size ? (
-                          <span className="email-attachment-size">
-                            {formatAttachmentSize(att.size)}
-                          </span>
-                        ) : null}
-                      </button>
-                    ) : (
+                  <li key={att.partId} className="email-attachment-row">
+                    <div className="email-attachment-item">
+                      {canPreview ? (
+                        <button
+                          type="button"
+                          className="email-attachment-name-btn"
+                          onClick={() =>
+                            openAttachmentViewer(
+                              `/view?${params.toString()}`,
+                              `mailer-view-${email.uid}-${att.partId}`
+                            )
+                          }
+                        >
+                          <span className="email-attachment-name">{att.filename}</span>
+                          {att.size ? (
+                            <span className="email-attachment-size">
+                              {formatAttachmentSize(att.size)}
+                            </span>
+                          ) : null}
+                        </button>
+                      ) : (
+                        <span className="email-attachment-file">
+                          <span className="email-attachment-name">{att.filename}</span>
+                          {att.size ? (
+                            <span className="email-attachment-size">
+                              {formatAttachmentSize(att.size)}
+                            </span>
+                          ) : null}
+                        </span>
+                      )}
                       <a
-                        className="email-attachment-item"
-                        href={`/api/emails/attachments?${params.toString()}`}
+                        className="email-attachment-download"
+                        href={downloadHref}
                         download={att.filename}
                       >
-                        <span className="email-attachment-name">{att.filename}</span>
-                        {att.size ? (
-                          <span className="email-attachment-size">
-                            {formatAttachmentSize(att.size)}
-                          </span>
-                        ) : null}
+                        Скачать
                       </a>
-                    )}
+                    </div>
                   </li>
                 );
               })}
