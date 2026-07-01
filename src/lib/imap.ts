@@ -10,8 +10,11 @@ import {
 } from "./folders";
 import {
   collectAttachmentsFromStructure,
+  dedupeAttachments,
+  findStructurePartByFilename,
   hasAttachmentsInStructure,
   normalizeFilename,
+  shouldIncludeParsedAttachment,
   type BodyStructureNode,
 } from "./attachments";
 import { isImapSecure, tlsOptions } from "./mail-config";
@@ -675,6 +678,53 @@ export async function searchAllMailboxes(
   return emails;
 }
 
+function buildAttachmentList(
+  structure?: BodyStructureNode,
+  parsedAttachments?: {
+    filename?: string;
+    contentType?: string;
+    size?: number;
+    contentDisposition?: string;
+    contentId?: string;
+    related?: boolean;
+  }[]
+): EmailAttachment[] {
+  let attachments = collectAttachmentsFromStructure(structure);
+
+  if (parsedAttachments?.length) {
+    const fromParsed = mergeParsedAttachments(parsedAttachments, structure);
+    attachments = dedupeAttachments([...attachments, ...fromParsed]);
+  }
+
+  return attachments;
+}
+
+export async function fetchEmailAttachmentList(
+  account: AccountWithPassword,
+  folderId: MailFolderId,
+  uid: number
+): Promise<EmailAttachment[]> {
+  return withMailbox(
+    account,
+    folderId,
+    async (client) => {
+      const message = await client.fetchOne(
+        uid,
+        { bodyStructure: true, source: true },
+        { uid: true }
+      );
+      if (!message) return [];
+
+      const parsed = message.source ? await simpleParser(message.source) : null;
+      return buildAttachmentList(
+        message.bodyStructure as BodyStructureNode | undefined,
+        parsed?.attachments
+      );
+    },
+    "high"
+  );
+}
+
 async function buildEmailDetailFromMessage(
   account: AccountWithPassword,
   folderId: MailFolderId,
@@ -704,16 +754,10 @@ async function buildEmailDetailFromMessage(
 
   const toList = formatAddressList(message.envelope?.to);
 
-  let attachments = collectAttachmentsFromStructure(
-    message.bodyStructure as BodyStructureNode | undefined
+  const attachments = buildAttachmentList(
+    message.bodyStructure as BodyStructureNode | undefined,
+    parsed.attachments
   );
-
-  if (attachments.length === 0 && parsed.attachments?.length) {
-    attachments = mergeParsedAttachments(
-      parsed.attachments,
-      message.bodyStructure as BodyStructureNode | undefined
-    );
-  }
 
   return {
     uid: message.uid,
@@ -969,24 +1013,21 @@ function mergeParsedAttachments(
   const structureByName = new Map(
     structureParts.map((part) => [normalizeFilename(part.filename), part])
   );
-  const unusedStructure = [...structureParts];
 
   const result: EmailAttachment[] = [];
   let index = 0;
 
   for (const item of parsed) {
+    if (!shouldIncludeParsedAttachment(item)) continue;
+
     const filename = item.filename?.trim();
-    const disp = (item.contentDisposition || "").toLowerCase();
-    const isInlineImage =
-      disp === "inline" && Boolean(item.contentId) && !filename;
-
-    if (isInlineImage || item.related) continue;
-    if (!filename && disp !== "attachment") continue;
-
     const name = filename || `attachment-${++index}`;
-    const fromStructure = structureByName.get(normalizeFilename(name));
-    const fromOrder = unusedStructure.shift();
-    const partId = fromStructure?.partId || fromOrder?.partId;
+    const fromStructure =
+      structureByName.get(normalizeFilename(name)) ||
+      (filename
+        ? findStructurePartByFilename(structure, filename)
+        : undefined);
+    const partId = fromStructure?.partId;
 
     if (!partId) continue;
 
@@ -994,7 +1035,7 @@ function mergeParsedAttachments(
       partId,
       filename: name,
       contentType: item.contentType || fromStructure?.contentType || "application/octet-stream",
-      size: item.size ?? fromStructure?.size ?? fromOrder?.size,
+      size: item.size ?? fromStructure?.size,
     });
   }
 
@@ -1059,12 +1100,7 @@ async function downloadFromParsedMessage(
 
   const normHint = filenameHint ? normalizeFilename(filenameHint) : "";
 
-  const candidates = parsed.attachments.filter((att) => {
-    if (att.related) return false;
-    const disp = (att.contentDisposition || "").toLowerCase();
-    if (disp === "inline" && att.contentId && !att.filename) return false;
-    return Boolean(att.filename) || disp === "attachment";
-  });
+  const candidates = parsed.attachments.filter(shouldIncludeParsedAttachment);
 
   if (!candidates.length) return null;
 

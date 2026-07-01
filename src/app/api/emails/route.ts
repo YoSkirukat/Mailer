@@ -19,7 +19,7 @@ import {
   isCacheFresh,
   LIST_PAGE_SIZE,
 } from "@/lib/mail-sync";
-import { fetchEmail, formatImapErrorMessage, setEmailSeen } from "@/lib/imap";
+import { fetchEmail, fetchEmailAttachmentList, formatImapErrorMessage, setEmailSeen } from "@/lib/imap";
 import type { EmailSummary } from "@/lib/types";
 
 async function fetchListForAccount(
@@ -101,6 +101,18 @@ export async function GET(request: Request) {
           folder,
           uid: numericUid,
         });
+
+        const attachments = await fetchEmailAttachmentList(
+          account,
+          folder,
+          numericUid
+        );
+        email = {
+          ...email,
+          attachments,
+          hasAttachments: attachments.length > 0,
+        };
+        storeCachedEmailDetail(email, folder);
 
         if (!email.seen) {
           email = { ...email, seen: true };

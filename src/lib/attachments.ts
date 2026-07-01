@@ -53,19 +53,71 @@ export function getPartFilename(node: BodyStructureNode): string | undefined {
   return decodeFilename(raw);
 }
 
+export function isSignatureInlineFilename(filename: string): boolean {
+  const name = filename.trim().toLowerCase();
+  if (!name) return false;
+
+  return (
+    /^mailrusigimg[_-]?/i.test(name) ||
+    /^yandex[_-]?sig/i.test(name) ||
+    /^signature[._-]/i.test(name) ||
+    /^sig[._-]?(img|image)/i.test(name) ||
+    /mail[_-]?ru[_-]?sig/i.test(name)
+  );
+}
+
+export function shouldIncludeParsedAttachment(item: {
+  filename?: string;
+  contentType?: string;
+  contentDisposition?: string;
+  contentId?: string;
+  related?: boolean;
+}): boolean {
+  if (item.related) return false;
+
+  const disp = (item.contentDisposition || "").toLowerCase();
+  const contentType = (item.contentType || "").toLowerCase();
+  const filename = item.filename?.trim() || "";
+
+  if (filename && isSignatureInlineFilename(filename)) return false;
+
+  if (disp === "attachment") return true;
+
+  if (disp === "inline" && contentType.startsWith("image/")) {
+    if (isSignatureInlineFilename(filename)) return false;
+    if (item.contentId && !filename) return false;
+    return false;
+  }
+
+  if (!filename && disp !== "attachment") return false;
+
+  return Boolean(filename);
+}
+
+function isEmbeddedInlinePart(node: BodyStructureNode): boolean {
+  const type = (node.type || "").toLowerCase();
+  const disp = (node.disposition || "").toLowerCase();
+  const filename = getPartFilename(node) || "";
+
+  if (isSignatureInlineFilename(filename)) return true;
+  if (type.startsWith("image/") && disp === "inline") return true;
+
+  return false;
+}
+
 export function isAttachmentPart(node: BodyStructureNode): boolean {
   const type = (node.type || "").toLowerCase();
   const disp = (node.disposition || "").toLowerCase();
   const filename = getPartFilename(node);
 
   if (type.startsWith("multipart/")) return false;
-  if (type === "text/plain" || type === "text/html") return false;
+
+  if (filename && isSignatureInlineFilename(filename)) return false;
 
   if (disp === "attachment") return true;
 
-  if (type.startsWith("image/") && disp === "inline" && !filename) {
-    return false;
-  }
+  if (type === "text/plain" || type === "text/html") return false;
+  if (isEmbeddedInlinePart(node)) return false;
 
   if (filename) return true;
 
@@ -81,10 +133,59 @@ export function isAttachmentPart(node: BodyStructureNode): boolean {
   return false;
 }
 
+export function dedupeAttachments(parts: EmailAttachment[]): EmailAttachment[] {
+  const seen = new Set<string>();
+  const result: EmailAttachment[] = [];
+
+  for (const part of parts) {
+    const key = `${part.partId}:${normalizeFilename(part.filename)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(part);
+  }
+
+  return result;
+}
+
 export function hasAttachmentsInStructure(
   node?: BodyStructureNode | null
 ): boolean {
   return collectAttachmentsFromStructure(node).length > 0;
+}
+
+export function findStructurePartByFilename(
+  node: BodyStructureNode | null | undefined,
+  filename: string,
+  path: number[] = []
+): EmailAttachment | undefined {
+  if (!node) return undefined;
+
+  const type = (node.type || "").toLowerCase();
+  if (type.startsWith("multipart/")) {
+    let index = 0;
+    for (const child of node.childNodes ?? []) {
+      const found = findStructurePartByFilename(child, filename, [...path, ++index]);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  const partFilename = getPartFilename(node);
+  if (
+    partFilename &&
+    normalizeFilename(partFilename) === normalizeFilename(filename)
+  ) {
+    const partId = node.part || (path.length > 0 ? path.join(".") : undefined);
+    if (!partId) return undefined;
+    return {
+      partId,
+      filename: partFilename,
+      contentType: node.type || "application/octet-stream",
+      size: node.size,
+    };
+  }
+
+  return undefined;
 }
 
 export function collectAttachmentsFromStructure(
