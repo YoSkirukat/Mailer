@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { getAccountWithPassword } from "@/lib/db";
 import {
-  emailDetailCacheKey,
-  getCachedEmailDetail,
-  setCachedEmailDetail,
+  resolveCachedEmailDetail,
+  storeCachedEmailDetail,
 } from "@/lib/email-detail-cache";
 import { isValidFolderId, type MailFolderId } from "@/lib/folders";
 import { attachLabelsToEmails } from "@/lib/labels-db";
@@ -45,7 +44,9 @@ export async function POST(request: Request) {
         ...new Set(
           groupItems
             .map((item) => item.uid)
-            .filter((uid) => !getCachedEmailDetail(emailDetailCacheKey(accountId, folder, uid)))
+            .filter(
+              (uid) => !resolveCachedEmailDetail(accountId, folder, uid)
+            )
         ),
       ];
 
@@ -55,10 +56,7 @@ export async function POST(request: Request) {
       const withLabels = attachLabelsToEmails(batch, folder);
 
       for (const detail of withLabels) {
-        setCachedEmailDetail(
-          emailDetailCacheKey(detail.accountId, folder, detail.uid),
-          detail
-        );
+        storeCachedEmailDetail(detail, folder);
         emails.push(detail);
       }
     }

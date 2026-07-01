@@ -21,6 +21,9 @@ interface EmailListProps {
   checkedKeys: ReadonlySet<string>;
   emptyMessage?: string;
   showFolderBadges?: boolean;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
   onSelect: (email: EmailSummary) => void;
   onMarkUnread: (email: EmailSummary) => void;
   onToggleCheck: (email: EmailSummary, checked: boolean) => void;
@@ -73,6 +76,9 @@ export function EmailList({
   checkedKeys,
   emptyMessage,
   showFolderBadges = false,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
   onSelect,
   onMarkUnread,
   onToggleCheck,
@@ -190,7 +196,9 @@ export function EmailList({
                   )}
                   <span className="subject-text">{email.subject}</span>
                 </div>
-                <div className="snippet">{email.snippet}</div>
+                {email.snippet ? (
+                  <div className="snippet">{email.snippet}</div>
+                ) : null}
                 <div className="email-item-footer">
                   {showFolderBadges &&
                     email.folder &&
@@ -219,6 +227,18 @@ export function EmailList({
             </div>
           );
         })}
+        {hasMore && onLoadMore ? (
+          <div className="email-list-load-more">
+            <button
+              type="button"
+              className="btn btn-secondary email-list-load-more-btn"
+              onClick={onLoadMore}
+              disabled={loadingMore || loading}
+            >
+              {loadingMore ? "Загрузка…" : "Загрузить ещё"}
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );

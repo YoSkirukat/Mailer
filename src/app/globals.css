@@ -965,6 +965,16 @@ a {
   padding: 4px 8px 10px 4px;
 }
 
+.email-list-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 16px 12px 20px;
+}
+
+.email-list-load-more-btn {
+  min-width: 160px;
+}
+
 .email-item {
   display: flex;
   align-items: flex-start;
@@ -1554,6 +1564,23 @@ a {
 
 .email-body-loading {
   opacity: 0.55;
+}
+
+.email-body-loader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  padding: 48px 24px;
+}
+
+.email-body-loader-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid color-mix(in srgb, var(--text-muted) 28%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
 .email-attachments {

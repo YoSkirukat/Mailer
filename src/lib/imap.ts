@@ -21,15 +21,19 @@ import type { AddressObject, Headers, ParsedMail } from "mailparser";
 
 const IMAP_MAX_CONCURRENT = 3;
 let imapInFlight = 0;
-const imapWaiters: Array<() => void> = [];
+const imapHighWaiters: Array<() => void> = [];
+const imapLowWaiters: Array<() => void> = [];
 
-function acquireImapSlot(): Promise<void> {
+export type ImapPriority = "high" | "low";
+
+function acquireImapSlot(priority: ImapPriority = "low"): Promise<void> {
   if (imapInFlight < IMAP_MAX_CONCURRENT) {
     imapInFlight++;
     return Promise.resolve();
   }
   return new Promise((resolve) => {
-    imapWaiters.push(() => {
+    const queue = priority === "high" ? imapHighWaiters : imapLowWaiters;
+    queue.push(() => {
       imapInFlight++;
       resolve();
     });
@@ -38,12 +42,15 @@ function acquireImapSlot(): Promise<void> {
 
 function releaseImapSlot(): void {
   imapInFlight = Math.max(0, imapInFlight - 1);
-  const next = imapWaiters.shift();
+  const next = imapHighWaiters.shift() ?? imapLowWaiters.shift();
   if (next) next();
 }
 
-async function withImapSlot<T>(fn: () => Promise<T>): Promise<T> {
-  await acquireImapSlot();
+async function withImapSlot<T>(
+  fn: () => Promise<T>,
+  priority: ImapPriority = "low"
+): Promise<T> {
+  await acquireImapSlot(priority);
   try {
     return await fn();
   } finally {
@@ -145,12 +152,13 @@ async function connectAccount(
 async function withMailbox<T>(
   account: AccountWithPassword,
   folderId: MailFolderId,
-  fn: (client: ImapFlow) => Promise<T>
+  fn: (client: ImapFlow) => Promise<T>,
+  priority: ImapPriority = "low"
 ): Promise<T> {
   return withImapSlot(async () => {
     const client = await connectAccount(account);
     try {
-      const mailbox = await resolveMailbox(client, folderId);
+      const mailbox = await resolveMailbox(client, folderId, account.email);
       if (!mailbox) {
         throw new Error(`Папка «${folderId}» не найдена на сервере`);
       }
@@ -163,7 +171,7 @@ async function withMailbox<T>(
     } finally {
       await safeLogout(client);
     }
-  });
+  }, priority);
 }
 
 function formatAddress(
@@ -258,7 +266,7 @@ async function extractReplyMetadata(
   return { replyToHeader, originalFromHeader };
 }
 
-async function buildSummaryFromMessage(
+function buildSummaryFromMessage(
   account: AccountWithPassword,
   folderId: MailFolderId,
   message: {
@@ -270,24 +278,9 @@ async function buildSummaryFromMessage(
       date?: Date | null;
     };
     flags?: Set<string>;
-    source?: Buffer;
     bodyStructure?: BodyStructureNode;
   }
-): Promise<EmailSummary> {
-  let snippet = "";
-  if (message.source) {
-    try {
-      const parsed = await simpleParser(message.source);
-      snippet = (parsed.text || parsed.html || "")
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 160);
-    } catch {
-      snippet = "";
-    }
-  }
-
+): EmailSummary {
   const isSent = folderId === "sent";
   const from = isSent
     ? formatAddressList(message.envelope?.to) || "Неизвестный"
@@ -308,9 +301,38 @@ async function buildSummaryFromMessage(
     hasAttachments: hasAttachmentsInStructure(
       message.bodyStructure as BodyStructureNode | undefined
     ),
-    snippet,
+    snippet: "",
     folder: folderId,
   };
+}
+
+const SUMMARY_FETCH_QUERY = {
+  uid: true,
+  envelope: true,
+  flags: true,
+  bodyStructure: true,
+} as const;
+
+async function fetchSummariesForUids(
+  client: ImapFlow,
+  account: AccountWithPassword,
+  folderId: MailFolderId,
+  uids: number[]
+): Promise<EmailSummary[]> {
+  if (uids.length === 0) return [];
+
+  const emails: EmailSummary[] = [];
+  const range = uids.join(",");
+
+  for await (const message of client.fetch(
+    range,
+    SUMMARY_FETCH_QUERY,
+    { uid: true }
+  )) {
+    emails.push(buildSummaryFromMessage(account, folderId, message));
+  }
+
+  return emails;
 }
 
 export async function fetchSummariesByUids(
@@ -320,22 +342,9 @@ export async function fetchSummariesByUids(
 ): Promise<EmailSummary[]> {
   if (uids.length === 0) return [];
 
-  return withMailbox(account, folderId, async (client) => {
-    const emails: EmailSummary[] = [];
-    const range = uids.join(",");
-
-    for await (const message of client.fetch(range, {
-      uid: true,
-      envelope: true,
-      flags: true,
-      bodyStructure: true,
-      source: { start: 0, maxLength: 2048 },
-    }, { uid: true })) {
-      emails.push(await buildSummaryFromMessage(account, folderId, message));
-    }
-
-    return emails;
-  });
+  return withMailbox(account, folderId, async (client) =>
+    fetchSummariesForUids(client, account, folderId, uids)
+  );
 }
 
 export async function countUnreadByUids(
@@ -373,30 +382,31 @@ export async function listMailboxUids(
 export async function fetchMailbox(
   account: AccountWithPassword,
   folderId: MailFolderId,
-  limit = 50
-): Promise<EmailSummary[]> {
+  limit = 50,
+  offset = 0
+): Promise<{ emails: EmailSummary[]; hasMore: boolean }> {
   return withMailbox(account, folderId, async (client) => {
     const mbox = client.mailbox;
     const total = mbox === false ? 0 : mbox.exists ?? 0;
-    if (total === 0) return [];
+    if (total === 0) return { emails: [], hasMore: false };
 
-    const start = Math.max(1, total - limit + 1);
-    const range = `${start}:${total}`;
+    const endSeq = total - offset;
+    if (endSeq < 1) return { emails: [], hasMore: false };
+
+    const startSeq = Math.max(1, endSeq - limit + 1);
+    const range = `${startSeq}:${endSeq}`;
     const emails: EmailSummary[] = [];
 
-    for await (const message of client.fetch(range, {
-      uid: true,
-      envelope: true,
-      flags: true,
-      bodyStructure: true,
-      source: { start: 0, maxLength: 2048 },
-    })) {
-      emails.push(await buildSummaryFromMessage(account, folderId, message));
+    for await (const message of client.fetch(range, SUMMARY_FETCH_QUERY)) {
+      emails.push(buildSummaryFromMessage(account, folderId, message));
     }
 
-    return emails.sort(
-      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-    );
+    return {
+      emails: emails.sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+      ),
+      hasMore: startSeq > 1,
+    };
   });
 }
 
@@ -426,15 +436,9 @@ async function fetchUnreadFromFlagsScan(
   const start = Math.max(1, total - scanSize + 1);
   const emails: EmailSummary[] = [];
 
-  for await (const message of client.fetch(`${start}:${total}`, {
-    uid: true,
-    envelope: true,
-    flags: true,
-    bodyStructure: true,
-    source: { start: 0, maxLength: 2048 },
-  })) {
+  for await (const message of client.fetch(`${start}:${total}`, SUMMARY_FETCH_QUERY)) {
     if (message.flags?.has("\\Seen")) continue;
-    emails.push(await buildSummaryFromMessage(account, folderId, message));
+    emails.push(buildSummaryFromMessage(account, folderId, message));
   }
 
   return emails
@@ -468,22 +472,13 @@ export async function fetchUnreadMailbox(
 
     const targetUids =
       uids.length > limit ? uids.slice(uids.length - limit) : uids;
-    const emails: EmailSummary[] = [];
-    const range = targetUids.join(",");
 
-    for await (const message of client.fetch(
-      range,
-      {
-        uid: true,
-        envelope: true,
-        flags: true,
-        bodyStructure: true,
-        source: { start: 0, maxLength: 2048 },
-      },
-      { uid: true }
-    )) {
-      emails.push(await buildSummaryFromMessage(account, folderId, message));
-    }
+    const emails = await fetchSummariesForUids(
+      client,
+      account,
+      folderId,
+      targetUids
+    );
 
     return emails.sort(
       (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
@@ -491,35 +486,77 @@ export async function fetchUnreadMailbox(
   });
 }
 
-const SEARCH_RESULT_LIMIT = 100;
+const SEARCH_RESULT_LIMIT = 50;
+const SEARCH_CACHE_MS = 60_000;
+const SEARCH_BODY_FOLDERS = new Set<MailFolderId>(["inbox", "sent"]);
+const SLOW_SEARCH_FOLDERS = new Set<MailFolderId>(["archive", "trash"]);
+const MIN_RESULTS_BEFORE_SLOW_FOLDERS = 8;
 
-function buildSearchQuery(query: string): SearchObject {
+const searchResultCache = new Map<
+  string,
+  { expires: number; emails: EmailSummary[] }
+>();
+
+function searchCacheKey(accountId: string, query: string, limit: number): string {
+  return `${accountId}:${query.toLowerCase()}:${limit}`;
+}
+
+function looksLikeEmailQuery(query: string): boolean {
+  return query.includes("@");
+}
+
+function mergeUidLists(...lists: number[][]): number[] {
+  return [...new Set(lists.flat())];
+}
+
+async function tryImapSearch(
+  client: ImapFlow,
+  criteria: SearchObject
+): Promise<number[]> {
+  try {
+    const uids = await client.search(criteria, { uid: true });
+    return uids || [];
+  } catch {
+    return [];
+  }
+}
+
+function buildHeaderSearchQuery(query: string): SearchObject {
   return {
-    or: [
-      { from: query },
-      { to: query },
-      { subject: query },
-      { text: query },
-    ],
+    or: [{ from: query }, { to: query }, { subject: query }],
   };
 }
 
-async function searchUids(client: ImapFlow, query: string): Promise<number[]> {
+interface SearchUidsOptions {
+  allowBodySearch?: boolean;
+}
+
+async function searchUids(
+  client: ImapFlow,
+  query: string,
+  options: SearchUidsOptions = {}
+): Promise<number[]> {
   const q = query.trim();
   if (!q) return [];
 
-  let uids: number[] | false = false;
-  try {
-    uids = await client.search(buildSearchQuery(q), { uid: true });
-  } catch {
-    try {
-      uids = await client.search({ text: q }, { uid: true });
-    } catch {
-      return [];
-    }
+  const allowBodySearch = options.allowBodySearch ?? true;
+
+  if (looksLikeEmailQuery(q)) {
+    const fromUids = await tryImapSearch(client, { from: q });
+    const toUids = await tryImapSearch(client, { to: q });
+    const merged = mergeUidLists(fromUids, toUids);
+    if (merged.length > 0) return merged;
   }
 
-  return uids || [];
+  const headerUids = await tryImapSearch(client, buildHeaderSearchQuery(q));
+  if (headerUids.length > 0) return headerUids;
+
+  if (!allowBodySearch) return [];
+
+  const textUids = await tryImapSearch(client, { text: q });
+  if (textUids.length > 0) return textUids;
+
+  return tryImapSearch(client, { subject: q });
 }
 
 export async function searchMailboxUids(
@@ -530,7 +567,9 @@ export async function searchMailboxUids(
   const q = query.trim();
   if (!q) return [];
 
-  return withMailbox(account, folderId, async (client) => searchUids(client, q));
+  return withMailbox(account, folderId, async (client) =>
+    searchUids(client, q, { allowBodySearch: SEARCH_BODY_FOLDERS.has(folderId) })
+  );
 }
 
 export async function searchMailbox(
@@ -540,30 +579,26 @@ export async function searchMailbox(
   limit = SEARCH_RESULT_LIMIT
 ): Promise<EmailSummary[]> {
   const q = query.trim();
-  if (!q) return fetchMailbox(account, folderId, limit);
+  if (!q) {
+    const page = await fetchMailbox(account, folderId, limit);
+    return page.emails;
+  }
 
   return withMailbox(account, folderId, async (client) => {
-    const uids = await searchUids(client, q);
+    const uids = await searchUids(client, q, {
+      allowBodySearch: SEARCH_BODY_FOLDERS.has(folderId),
+    });
     if (uids.length === 0) return [];
 
     const targetUids =
       uids.length > limit ? uids.slice(uids.length - limit) : uids;
-    const emails: EmailSummary[] = [];
-    const range = targetUids.join(",");
 
-    for await (const message of client.fetch(
-      range,
-      {
-        uid: true,
-        envelope: true,
-        flags: true,
-        bodyStructure: true,
-        source: { start: 0, maxLength: 2048 },
-      },
-      { uid: true }
-    )) {
-      emails.push(await buildSummaryFromMessage(account, folderId, message));
-    }
+    const emails = await fetchSummariesForUids(
+      client,
+      account,
+      folderId,
+      targetUids
+    );
 
     return emails.sort(
       (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
@@ -579,27 +614,65 @@ export async function searchAllMailboxes(
   const q = query.trim();
   if (!q) return [];
 
-  const perFolder = Math.max(
-    15,
-    Math.ceil(limit / SEARCHABLE_FOLDERS.length)
-  );
-
-  const batches = await Promise.allSettled(
-    SEARCHABLE_FOLDERS.map((folderId) =>
-      searchMailbox(account, folderId, q, perFolder)
-    )
-  );
-
-  const emails: EmailSummary[] = [];
-  for (const result of batches) {
-    if (result.status === "fulfilled") {
-      emails.push(...result.value);
-    }
+  const cacheKey = searchCacheKey(account.id, q, limit);
+  const cached = searchResultCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return cached.emails;
   }
 
-  return emails
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-    .slice(0, limit);
+  const emails = await withImapSlot(async () => {
+    const client = await connectAccount(account);
+    const results: EmailSummary[] = [];
+
+    try {
+      for (const folderId of SEARCHABLE_FOLDERS) {
+        if (results.length >= limit) break;
+        if (
+          SLOW_SEARCH_FOLDERS.has(folderId) &&
+          results.length >= MIN_RESULTS_BEFORE_SLOW_FOLDERS
+        ) {
+          continue;
+        }
+
+        const mailbox = await resolveMailbox(client, folderId, account.email);
+        if (!mailbox) continue;
+
+        const lock = await client.getMailboxLock(mailbox);
+        try {
+          const uids = await searchUids(client, q, {
+            allowBodySearch: SEARCH_BODY_FOLDERS.has(folderId),
+          });
+          if (uids.length === 0) continue;
+
+          const remaining = limit - results.length;
+          const targetUids =
+            uids.length > remaining ? uids.slice(uids.length - remaining) : uids;
+          const folderEmails = await fetchSummariesForUids(
+            client,
+            account,
+            folderId,
+            targetUids
+          );
+          results.push(...folderEmails);
+        } finally {
+          lock.release();
+        }
+      }
+    } finally {
+      await safeLogout(client);
+    }
+
+    return results
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, limit);
+  }, "high");
+
+  searchResultCache.set(cacheKey, {
+    expires: Date.now() + SEARCH_CACHE_MS,
+    emails,
+  });
+
+  return emails;
 }
 
 async function buildEmailDetailFromMessage(
@@ -691,7 +764,7 @@ export async function fetchEmail(
       message,
       markAsRead ? true : wasSeen
     );
-  });
+  }, "high");
 }
 
 export async function fetchEmailsBatch(
@@ -726,7 +799,7 @@ export async function fetchEmailsBatch(
     }
 
     return emails;
-  });
+  }, "high");
 }
 
 export async function testImapConnection(
@@ -780,7 +853,7 @@ export async function appendToSentFolder(
   await withImapSlot(async () => {
     const client = await connectAccount(account);
     try {
-      const sentPath = await resolveMailbox(client, "sent");
+      const sentPath = await resolveMailbox(client, "sent", account.email);
       if (!sentPath) {
         throw new Error("Папка «Отправленные» не найдена на сервере");
       }
@@ -816,8 +889,8 @@ export async function moveEmail(
   await withImapSlot(async () => {
     const client = await connectAccount(account);
     try {
-      const fromPath = await resolveMailbox(client, fromFolderId);
-      const toPath = await resolveMailbox(client, toFolderId);
+      const fromPath = await resolveMailbox(client, fromFolderId, account.email);
+      const toPath = await resolveMailbox(client, toFolderId, account.email);
       if (!fromPath) {
         throw new Error(`Исходная папка «${fromFolderId}» не найдена`);
       }
@@ -857,7 +930,7 @@ export async function getAllFolderUnreadCounts(
     try {
       for (const folder of MAIL_FOLDERS) {
         try {
-          const path = await resolveMailbox(client, folder.id);
+          const path = await resolveMailbox(client, folder.id, account.email);
           if (!path) continue;
           const status = await client.status(path, { unseen: true });
           counts[folder.id] = status.unseen ?? 0;
@@ -877,7 +950,8 @@ export async function fetchInbox(
   account: AccountWithPassword,
   limit = 50
 ): Promise<EmailSummary[]> {
-  return fetchMailbox(account, "inbox", limit);
+  const page = await fetchMailbox(account, "inbox", limit);
+  return page.emails;
 }
 
 function mergeParsedAttachments(

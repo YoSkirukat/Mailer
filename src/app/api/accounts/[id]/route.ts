@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { deleteAccount, updateAccount } from "@/lib/db";
+import { clearCachedMessagesForAccount } from "@/lib/mail-cache-db";
+import { clearCachedMessageDetailsForAccount } from "@/lib/mail-detail-cache-db";
 import type { MailAccountUpdate } from "@/lib/types";
 
 export async function PATCH(
@@ -43,6 +45,8 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
+    clearCachedMessagesForAccount(id);
+    clearCachedMessageDetailsForAccount(id);
     const deleted = deleteAccount(id);
     if (!deleted) {
       return NextResponse.json({ error: "Аккаунт не найден" }, { status: 404 });

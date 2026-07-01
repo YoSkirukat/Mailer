@@ -96,27 +96,75 @@ function normalizePath(path: string): string {
   return path.toLowerCase().replace(/\\/g, "/");
 }
 
+const mailboxPathCache = new Map<string, string>();
+
+function mailboxCacheKey(accountKey: string, folderId: MailFolderId): string {
+  return `${accountKey.toLowerCase()}:${folderId}`;
+}
+
+async function populateMailboxPathCache(
+  client: ImapFlow,
+  accountKey: string
+): Promise<void> {
+  mailboxPathCache.set(mailboxCacheKey(accountKey, "inbox"), "INBOX");
+
+  const mailboxes = await client.list();
+  const paths = mailboxes.map((mailbox) => mailbox.path);
+
+  for (const folder of MAIL_FOLDERS) {
+    if (folder.id === "inbox") continue;
+
+    for (const candidate of folder.candidates) {
+      const norm = normalizePath(candidate);
+      const exact = paths.find((path) => normalizePath(path) === norm);
+      if (exact) {
+        mailboxPathCache.set(mailboxCacheKey(accountKey, folder.id), exact);
+        break;
+      }
+
+      const suffix = paths.find(
+        (path) =>
+          normalizePath(path).endsWith(`/${norm}`) ||
+          normalizePath(path).endsWith(norm)
+      );
+      if (suffix) {
+        mailboxPathCache.set(mailboxCacheKey(accountKey, folder.id), suffix);
+        break;
+      }
+    }
+  }
+}
+
 export async function resolveMailbox(
   client: ImapFlow,
-  folderId: MailFolderId
+  folderId: MailFolderId,
+  accountKey?: string
 ): Promise<string | null> {
   if (folderId === "inbox") return "INBOX";
 
-  const config = MAIL_FOLDERS.find((f) => f.id === folderId);
+  if (accountKey) {
+    const cached = mailboxPathCache.get(mailboxCacheKey(accountKey, folderId));
+    if (cached) return cached;
+
+    await populateMailboxPathCache(client, accountKey);
+    return mailboxPathCache.get(mailboxCacheKey(accountKey, folderId)) ?? null;
+  }
+
+  const config = MAIL_FOLDERS.find((folder) => folder.id === folderId);
   if (!config) return null;
 
   const mailboxes = await client.list();
-  const paths = mailboxes.map((m) => m.path);
+  const paths = mailboxes.map((mailbox) => mailbox.path);
 
   for (const candidate of config.candidates) {
     const norm = normalizePath(candidate);
-    const exact = paths.find((p) => normalizePath(p) === norm);
+    const exact = paths.find((path) => normalizePath(path) === norm);
     if (exact) return exact;
 
     const suffix = paths.find(
-      (p) =>
-        normalizePath(p).endsWith(`/${norm}`) ||
-        normalizePath(p).endsWith(norm)
+      (path) =>
+        normalizePath(path).endsWith(`/${norm}`) ||
+        normalizePath(path).endsWith(norm)
     );
     if (suffix) return suffix;
   }

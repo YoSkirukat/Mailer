@@ -33,6 +33,31 @@ import {
 } from "@/lib/notifications";
 import type { EmailDetail, EmailSummary, MailAccount, MailLabel } from "@/lib/types";
 
+const LIST_PAGE_SIZE = 50;
+
+function mergeEmailSummaries(
+  existing: EmailSummary[],
+  next: EmailSummary[],
+  folderFallback: MailFolderId
+): EmailSummary[] {
+  const seen = new Set(
+    existing.map((email) =>
+      emailDetailKey(email, (email.folder as MailFolderId) || folderFallback)
+    )
+  );
+  const merged = [...existing];
+  for (const email of next) {
+    const folder = (email.folder as MailFolderId) || folderFallback;
+    const key = emailDetailKey(email, folder);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(email);
+  }
+  return merged.sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+}
+
 function normalizeErrors(items: unknown): string[] {
   if (!Array.isArray(items)) return [];
   return items
@@ -103,6 +128,9 @@ export default function HomePage() {
   const [unreadListMode, setUnreadListMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSearch, setActiveSearch] = useState("");
+  const [listPage, setListPage] = useState(0);
+  const [hasMoreEmails, setHasMoreEmails] = useState(false);
+  const [loadingMoreEmails, setLoadingMoreEmails] = useState(false);
   const activeSearchRef = useRef(activeSearch);
   activeSearchRef.current = activeSearch;
   const countsRefreshTimer = useRef<number | null>(null);
@@ -126,6 +154,7 @@ export default function HomePage() {
   composeDraftRef.current = composeDraft;
   const detailCacheRef = useRef<Map<string, EmailDetail>>(new Map());
   const prefetchInFlightRef = useRef<Set<string>>(new Set());
+  const prefetchTimerRef = useRef<number | null>(null);
 
   const loadLabelUnreadCounts = useCallback(async (accountId?: string | null) => {
     try {
@@ -216,7 +245,7 @@ export default function HomePage() {
       labelId?: string | null,
       search?: string | null,
       unreadOnly = false,
-      options?: { silent?: boolean }
+      options?: { silent?: boolean; append?: boolean; offset?: number }
     ): Promise<EmailSummary[] | undefined> => {
       const silent = options?.silent ?? false;
       if (silent && loadingRef.current) return;
@@ -249,7 +278,7 @@ export default function HomePage() {
         return true;
       };
 
-      if (!silent) {
+      if (!silent && !options?.append) {
         setLoading(true);
         setErrors([]);
       }
@@ -267,6 +296,8 @@ export default function HomePage() {
           } else {
             applyEmails(data.emails || [], normalizeErrors(data.errors));
           }
+          setHasMoreEmails(false);
+          setListPage(0);
         } else if (labelId) {
           const params = new URLSearchParams();
           if (accountId) params.set("accountId", accountId);
@@ -282,24 +313,62 @@ export default function HomePage() {
           } else {
             applyEmails(data.emails || []);
           }
+          setHasMoreEmails(false);
+          setListPage(0);
         } else {
           const params = new URLSearchParams({ folder });
           if (accountId) params.set("accountId", accountId);
           if (unreadOnly) params.set("unreadOnly", "1");
+          params.set(
+            "offset",
+            String(options?.append ? (options.offset ?? 0) : 0)
+          );
+          params.set("limit", String(LIST_PAGE_SIZE));
           const res = await fetch(`/api/emails?${params}`);
           const data = await res.json();
-          if (Array.isArray(data)) {
+          const nextEmails = Array.isArray(data) ? data : data.emails || [];
+          const nextErrors = Array.isArray(data)
+            ? []
+            : normalizeErrors(data.errors);
+          const nextHasMore = Array.isArray(data) ? false : Boolean(data.hasMore);
+
+          if (options?.append) {
+            const applyAppend = (): boolean => {
+              if (silent) {
+                if (requestId !== silentLoadRequestId.current) return false;
+                if (loadEmailsRequestId.current !== userRequestAtStart) {
+                  return false;
+                }
+              } else if (requestId !== loadEmailsRequestId.current) {
+                return false;
+              }
+
+              setEmails((prev) =>
+                mergeEmailSummaries(prev, nextEmails, folder)
+              );
+              if (nextErrors.length) setErrors(nextErrors);
+              return true;
+            };
+            applyAppend();
+          } else if (Array.isArray(data)) {
             applyEmails(data);
+            setListPage(0);
           } else {
-            applyEmails(data.emails || [], normalizeErrors(data.errors));
+            applyEmails(nextEmails, nextErrors);
+            setListPage(0);
           }
+          setHasMoreEmails(nextHasMore);
         }
       } catch {
         if (!silent && requestId === loadEmailsRequestId.current) {
           setErrors(["Не удалось загрузить письма"]);
         }
       } finally {
-        if (!silent && requestId === loadEmailsRequestId.current) {
+        if (
+          !silent &&
+          !options?.append &&
+          requestId === loadEmailsRequestId.current
+        ) {
           setLoading(false);
         }
       }
@@ -307,6 +376,45 @@ export default function HomePage() {
     },
     []
   );
+
+  const handleLoadMore = useCallback(async () => {
+    if (
+      loadingMoreEmails ||
+      loading ||
+      activeSearch ||
+      selectedLabelId ||
+      unreadListMode
+    ) {
+      return;
+    }
+
+    const nextPage = listPage + 1;
+    const offset = nextPage * LIST_PAGE_SIZE;
+    setLoadingMoreEmails(true);
+    try {
+      await loadEmails(
+        selectedAccountId,
+        selectedFolder,
+        null,
+        null,
+        unreadListMode,
+        { append: true, offset, silent: true }
+      );
+      setListPage(nextPage);
+    } finally {
+      setLoadingMoreEmails(false);
+    }
+  }, [
+    activeSearch,
+    listPage,
+    loadEmails,
+    loading,
+    loadingMoreEmails,
+    selectedAccountId,
+    selectedFolder,
+    selectedLabelId,
+    unreadListMode,
+  ]);
 
   const refreshList = useCallback(
     async (
@@ -349,11 +457,11 @@ export default function HomePage() {
         emails = await loadEmails(acc, folder, null, null, unreadOnly, { silent });
       }
       if (refreshCounts) {
-        refreshSidebarCounts(acc);
+        scheduleSidebarCounts(acc, silent ? 5000 : 2500);
       }
       return emails;
     },
-    [loadEmails, selectedAccountId, selectedFolder, selectedLabelId, refreshSidebarCounts, emailFilter]
+    [loadEmails, selectedAccountId, selectedFolder, selectedLabelId, scheduleSidebarCounts, emailFilter]
   );
 
   const refreshInBackground = useCallback(
@@ -378,12 +486,6 @@ export default function HomePage() {
 
   const refreshListRef = useRef(refreshList);
   refreshListRef.current = refreshList;
-
-  const seedInboxSnapshot = useCallback(async () => {
-    const inboxEmails = await fetchInboxEmails();
-    knownInboxKeysRef.current = new Set(inboxEmails.map(emailNotificationKey));
-    inboxSnapshotReadyRef.current = true;
-  }, []);
 
   const updateInboxSnapshot = useCallback((inboxEmails: EmailSummary[]) => {
     const nextKeys = new Set(inboxEmails.map(emailNotificationKey));
@@ -447,9 +549,14 @@ export default function HomePage() {
     loadLabels();
     loadAccounts().then(async (accs) => {
       if (accs.length > 0) {
-        await loadEmails(null, "inbox");
-        await seedInboxSnapshot();
-        refreshSidebarCounts(null);
+        const inboxEmails = await loadEmails(null, "inbox");
+        if (inboxEmails) {
+          knownInboxKeysRef.current = new Set(
+            inboxEmails.map(emailNotificationKey)
+          );
+          inboxSnapshotReadyRef.current = true;
+        }
+        scheduleSidebarCounts(null, 3000);
         void requestNotificationPermission();
       } else setLoading(false);
     });
@@ -544,6 +651,8 @@ export default function HomePage() {
     setActiveSearch("");
     setSearchQuery("");
     activeSearchRef.current = "";
+    setListPage(0);
+    setHasMoreEmails(false);
 
     if (folder === "inbox") {
       setEmailFilter("all");
@@ -1216,9 +1325,25 @@ export default function HomePage() {
   }, [selectedFolder, selectedAccountId, selectedLabelId, activeSearch, clearCheckedEmails]);
 
   useEffect(() => {
-    if (loading || emails.length === 0) return;
-    prefetchEmailDetails(emails.slice(0, 10));
-  }, [emails, loading, prefetchEmailDetails]);
+    if (loading || emails.length === 0 || activeSearch) return;
+
+    void prefetchEmailDetails(emails.slice(0, 3));
+
+    if (prefetchTimerRef.current !== null) {
+      window.clearTimeout(prefetchTimerRef.current);
+    }
+    prefetchTimerRef.current = window.setTimeout(() => {
+      prefetchTimerRef.current = null;
+      prefetchEmailDetails(emails.slice(0, 10));
+    }, 800);
+
+    return () => {
+      if (prefetchTimerRef.current !== null) {
+        window.clearTimeout(prefetchTimerRef.current);
+        prefetchTimerRef.current = null;
+      }
+    };
+  }, [emails, loading, activeSearch, prefetchEmailDetails]);
 
   useEffect(() => {
     if (!selectedEmail) return;
@@ -1388,6 +1513,14 @@ export default function HomePage() {
           loading={loading}
           folder={listFolderForDisplay}
           showFolderBadges={Boolean(activeSearch)}
+          hasMore={
+            hasMoreEmails &&
+            !activeSearch &&
+            !selectedLabelId &&
+            !unreadListMode
+          }
+          loadingMore={loadingMoreEmails}
+          onLoadMore={handleLoadMore}
           selectedUid={selectedEmail?.uid}
           selectedAccountId={selectedEmail?.accountId}
           selectedFolder={selectedEmail?.folder}

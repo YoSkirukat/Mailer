@@ -307,13 +307,21 @@ export function EmailViewer({
           </div>
         )}
 
-        {email.html ? (
+        {bodyLoading ? (
           <div
-            className={`email-body-html ${bodyLoading ? "email-body-loading" : ""}`}
+            className="email-body-loader"
+            aria-busy="true"
+            aria-label="Загрузка письма"
+          >
+            <div className="email-body-loader-spinner" />
+          </div>
+        ) : email.html ? (
+          <div
+            className="email-body-html"
             dangerouslySetInnerHTML={{ __html: email.html }}
           />
         ) : (
-          <div className={`email-body ${bodyLoading ? "email-body-loading" : ""}`}>
+          <div className="email-body">
             {email.text || "(пустое письмо)"}
           </div>
         )}

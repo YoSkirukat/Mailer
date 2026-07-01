@@ -45,7 +45,7 @@ export function EmailSearch({
         <input
           type="search"
           className="email-search-input"
-          placeholder="Поиск по адресу, имени, теме, тексту…"
+          placeholder="Поиск по адресу, теме… (текст — дольше)"
           value={value}
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}

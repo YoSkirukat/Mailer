@@ -174,6 +174,59 @@ function migrateDb(database: Database.Database) {
       updated_at TEXT NOT NULL
     )
   `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS cached_messages (
+      account_id TEXT NOT NULL,
+      folder TEXT NOT NULL,
+      uid INTEGER NOT NULL,
+      subject TEXT NOT NULL DEFAULT '',
+      from_addr TEXT NOT NULL DEFAULT '',
+      to_addr TEXT NOT NULL DEFAULT '',
+      date TEXT NOT NULL,
+      seen INTEGER NOT NULL DEFAULT 0,
+      answered INTEGER NOT NULL DEFAULT 0,
+      has_attachments INTEGER NOT NULL DEFAULT 0,
+      snippet TEXT NOT NULL DEFAULT '',
+      account_email TEXT NOT NULL DEFAULT '',
+      account_name TEXT NOT NULL DEFAULT '',
+      account_color TEXT NOT NULL DEFAULT '#3b82f6',
+      synced_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, folder, uid)
+    )
+  `);
+
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_cached_messages_list
+      ON cached_messages(folder, date DESC)
+  `);
+
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_cached_messages_account_folder
+      ON cached_messages(account_id, folder, date DESC)
+  `);
+
+  database.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS cached_messages_fts USING fts5(
+      account_id UNINDEXED,
+      folder UNINDEXED,
+      uid UNINDEXED,
+      subject,
+      from_addr,
+      to_addr,
+      snippet,
+      tokenize='unicode61'
+    )
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS cached_messages_sync (
+      account_id TEXT NOT NULL,
+      folder TEXT NOT NULL,
+      synced_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, folder)
+    )
+  `);
 }
 
 export function getDatabase(): Database.Database {
