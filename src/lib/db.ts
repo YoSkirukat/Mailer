@@ -14,10 +14,10 @@ let db: Database.Database | null = null;
 function getDb(): Database.Database {
   if (!db) {
     mkdirSync(DATA_DIR, { recursive: true });
-    db = new Database(DB_PATH);
-    db.pragma("journal_mode = WAL");
-    db.pragma("foreign_keys = ON");
-    db.exec(`
+    const instance = new Database(DB_PATH);
+    instance.pragma("journal_mode = WAL");
+    instance.pragma("foreign_keys = ON");
+    instance.exec(`
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -31,9 +31,24 @@ function getDb(): Database.Database {
         created_at TEXT NOT NULL
       )
     `);
-    migrateDb(db);
+    try {
+      migrateDb(instance);
+      db = instance;
+    } catch (error) {
+      instance.close();
+      throw error;
+    }
   }
   return db;
+}
+
+function hasTable(database: Database.Database, table: string): boolean {
+  const row = database
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+    )
+    .get(table) as { name: string } | undefined;
+  return row !== undefined;
 }
 
 function hasColumn(
@@ -41,6 +56,7 @@ function hasColumn(
   table: string,
   column: string
 ): boolean {
+  if (!hasTable(database, table)) return false;
   const columns = database
     .prepare(`PRAGMA table_info(${table})`)
     .all() as { name: string }[];
@@ -66,11 +82,6 @@ function migrateDb(database: Database.Database) {
   if (!hasColumn(database, "accounts", "from_name")) {
     database.exec(
       "ALTER TABLE accounts ADD COLUMN from_name TEXT NOT NULL DEFAULT ''"
-    );
-  }
-  if (!hasColumn(database, "mail_filters", "baseline_pending")) {
-    database.exec(
-      "ALTER TABLE mail_filters ADD COLUMN baseline_pending INTEGER NOT NULL DEFAULT 0"
     );
   }
 
@@ -101,10 +112,17 @@ function migrateDb(database: Database.Database) {
       enabled INTEGER NOT NULL DEFAULT 1,
       match_mode TEXT NOT NULL DEFAULT 'all',
       sort_order INTEGER NOT NULL DEFAULT 0,
+      baseline_pending INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
   `);
+
+  if (!hasColumn(database, "mail_filters", "baseline_pending")) {
+    database.exec(
+      "ALTER TABLE mail_filters ADD COLUMN baseline_pending INTEGER NOT NULL DEFAULT 0"
+    );
+  }
 
   database.exec(`
     CREATE TABLE IF NOT EXISTS mail_filter_rules (

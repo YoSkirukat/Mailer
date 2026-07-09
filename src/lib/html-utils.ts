@@ -18,7 +18,7 @@ function trimTrailingUrlPunctuation(url: string): { url: string; trailing: strin
   return { url: trimmed, trailing };
 }
 
-function linkifyEscapedText(text: string): string {
+function linkifyPlainTextSegment(text: string): string {
   return text.replace(URL_PATTERN, (match) => {
     const { url, trailing } = trimTrailingUrlPunctuation(match);
     if (!url) return match;
@@ -27,8 +27,17 @@ function linkifyEscapedText(text: string): string {
   });
 }
 
+function linkifyHtmlTextNode(text: string): string {
+  return text.replace(URL_PATTERN, (match) => {
+    const { url, trailing } = trimTrailingUrlPunctuation(match);
+    if (!url) return match;
+    const href = url.startsWith("www.") ? `https://${url}` : url;
+    return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>${trailing}`;
+  });
+}
+
 export function linkifyTextToHtml(text: string): string {
-  return linkifyEscapedText(escapeHtml(text));
+  return linkifyPlainTextSegment(escapeHtml(text));
 }
 
 export function linkifyHtml(html: string): string {
@@ -43,7 +52,7 @@ export function linkifyHtml(html: string): string {
     const textBefore = html.slice(lastIndex, index);
     result +=
       insideAnchor === 0 && insideSkip === 0
-        ? linkifyEscapedText(escapeHtml(textBefore))
+        ? linkifyHtmlTextNode(textBefore)
         : textBefore;
 
     const tag = match[0];
@@ -60,7 +69,7 @@ export function linkifyHtml(html: string): string {
   const tail = html.slice(lastIndex);
   result +=
     insideAnchor === 0 && insideSkip === 0
-      ? linkifyEscapedText(escapeHtml(tail))
+      ? linkifyHtmlTextNode(tail)
       : tail;
 
   return result;

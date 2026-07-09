@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { SettingsModal } from "@/components/SettingsModal";
 import { ComposeModal, type ComposeDraft } from "@/components/ComposeModal";
 import { EmailContextMenu, type ContextMenuAction } from "@/components/EmailContextMenu";
@@ -36,9 +36,41 @@ import type { EmailDetail, EmailSummary, MailAccount, MailLabel } from "@/lib/ty
 const LIST_PAGE_SIZE = 50;
 const LIST_DEFAULT_WIDTH = 380;
 const LIST_MIN_WIDTH = 280;
+const LIST_WIDTH_STORAGE_KEY = "mailer-list-width";
 const SIDEBAR_WIDTH = 260;
 const MIN_VIEWER_WIDTH = 320;
 const APP_GAP_PX = 12;
+
+function clampListWidth(width: number, appWidth?: number): number {
+  const maxListWidth = appWidth
+    ? Math.max(
+        LIST_MIN_WIDTH,
+        Math.floor(appWidth - SIDEBAR_WIDTH - MIN_VIEWER_WIDTH - APP_GAP_PX * 2)
+      )
+    : 1200;
+  return Math.min(maxListWidth, Math.max(LIST_MIN_WIDTH, Math.round(width)));
+}
+
+function readStoredListWidth(appWidth?: number): number | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(LIST_WIDTH_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed)) return null;
+    return clampListWidth(parsed, appWidth ?? window.innerWidth);
+  } catch {
+    return null;
+  }
+}
+
+function storeListWidth(width: number): void {
+  try {
+    localStorage.setItem(LIST_WIDTH_STORAGE_KEY, String(width));
+  } catch {
+    /* localStorage недоступен */
+  }
+}
 
 function mergeEmailSummaries(
   existing: EmailSummary[],
@@ -138,6 +170,7 @@ export default function HomePage() {
   const [loadingMoreEmails, setLoadingMoreEmails] = useState(false);
   const [listWidth, setListWidth] = useState(LIST_DEFAULT_WIDTH);
   const appRef = useRef<HTMLDivElement>(null);
+  const listWidthRef = useRef(LIST_DEFAULT_WIDTH);
   const listResizeRef = useRef<{ active: boolean; startX: number; startWidth: number }>({
     active: false,
     startX: 0,
@@ -167,6 +200,14 @@ export default function HomePage() {
   const detailCacheRef = useRef<Map<string, EmailDetail>>(new Map());
   const prefetchInFlightRef = useRef<Set<string>>(new Set());
   const prefetchTimerRef = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    const stored = readStoredListWidth();
+    if (stored !== null) {
+      listWidthRef.current = stored;
+      setListWidth(stored);
+    }
+  }, []);
 
   const loadLabelUnreadCounts = useCallback(async (accountId?: string | null) => {
     try {
@@ -231,10 +272,18 @@ export default function HomePage() {
   );
 
   const loadLabels = useCallback(async () => {
-    const res = await fetch("/api/labels");
-    const data = await res.json();
-    setLabels(data);
-    return data as MailLabel[];
+    try {
+      const res = await fetch("/api/labels");
+      const data = await res.json();
+      if (res.ok && Array.isArray(data)) {
+        setLabels(data);
+        return data as MailLabel[];
+      }
+    } catch {
+      /* ярлыки подгрузятся при следующей попытке */
+    }
+    setLabels([]);
+    return [];
   }, []);
 
   const loadAccounts = useCallback(async () => {
@@ -918,27 +967,13 @@ export default function HomePage() {
     ? "inbox"
     : selectedFolder;
 
-  const canResizeList =
-    listFolderForDisplay === "inbox" &&
-    !activeSearch &&
-    selectedLabelId === null &&
-    !unreadListMode;
-
   const startListResize = (event: React.MouseEvent) => {
     if (!appRef.current) return;
     event.preventDefault();
     event.stopPropagation();
 
     const appRect = appRef.current.getBoundingClientRect();
-    const sidebarWidth = SIDEBAR_WIDTH;
-
-    const maxListWidth = Math.max(
-      LIST_MIN_WIDTH,
-      Math.floor(
-        appRect.width - sidebarWidth - MIN_VIEWER_WIDTH - APP_GAP_PX * 2
-      )
-    );
-    const minListWidth = LIST_MIN_WIDTH;
+    const maxListWidth = clampListWidth(9999, appRect.width);
 
     listResizeRef.current = {
       active: true,
@@ -953,8 +988,9 @@ export default function HomePage() {
       if (!listResizeRef.current.active) return;
       const dx = moveEvent.clientX - listResizeRef.current.startX;
       const next = listResizeRef.current.startWidth + dx;
-      const clamped = Math.min(maxListWidth, Math.max(minListWidth, next));
-      setListWidth(Math.round(clamped));
+      const clamped = clampListWidth(next, appRect.width);
+      listWidthRef.current = clamped;
+      setListWidth(clamped);
     };
 
     const onUp = () => {
@@ -963,6 +999,7 @@ export default function HomePage() {
       document.body.style.userSelect = "";
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      storeListWidth(listWidthRef.current);
     };
 
     document.addEventListener("mousemove", onMove);
@@ -1478,15 +1515,7 @@ export default function HomePage() {
   const tabUnreadCount = unreadCounts[selectedFolder] ?? 0;
 
   return (
-    <div
-      ref={appRef}
-      className="app"
-      style={
-        {
-          ["--list-width" as any]: `${listWidth}px`,
-        } as React.CSSProperties
-      }
-    >
+    <div ref={appRef} className="app">
       <TabTitle folderName={tabFolderName} unreadCount={tabUnreadCount} />
       <Sidebar
         accounts={accounts}
@@ -1507,14 +1536,14 @@ export default function HomePage() {
         onCompose={() => setComposeDraft(emptyDraft(defaultAccountId, accounts))}
       />
 
-      <div className="email-list-panel">
-        {canResizeList && (
-          <div
-            className="list-resizer"
-            onMouseDown={startListResize}
-            aria-hidden
-          />
-        )}
+      <div
+        className="email-list-panel"
+        style={{
+          width: listWidth,
+          minWidth: listWidth,
+          maxWidth: listWidth,
+        }}
+      >
         <div className="panel-header">
           <h2>{panelTitle}</h2>
           <div className="panel-header-actions">
@@ -1641,6 +1670,14 @@ export default function HomePage() {
           }}
         />
       </div>
+
+      <div
+        className="list-resizer"
+        onMouseDown={startListResize}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Изменить ширину списка писем"
+      />
 
       <div className="email-viewer-column">
         {accounts.length > 0 && (

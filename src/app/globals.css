@@ -594,8 +594,7 @@ a {
 }
 
 .email-list-panel {
-  width: var(--list-width);
-  min-width: var(--list-width);
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   position: relative;
@@ -607,46 +606,52 @@ a {
 }
 
 .list-resizer {
-  position: absolute;
-  right: -6px;
-  top: 0;
-  bottom: 0;
+  flex-shrink: 0;
+  align-self: stretch;
   width: 12px;
+  margin: 0 -6px;
   cursor: col-resize;
-  z-index: 10;
+  z-index: 20;
+  position: relative;
+  touch-action: none;
 }
 
 .list-resizer::after {
   content: "⇔";
   position: absolute;
-  left: 1px;
+  left: 50%;
   top: 50%;
-  transform: translateY(-50%);
+  transform: translate(-50%, -50%);
   font-size: 14px;
   line-height: 1;
   color: color-mix(in srgb, var(--text-muted) 70%, var(--surface));
   opacity: 0;
   transition: opacity 0.12s;
+  pointer-events: none;
 }
 
-.list-resizer:hover::after {
+.list-resizer:hover::after,
+.list-resizer:active::after {
   opacity: 1;
 }
 
 .list-resizer::before {
   content: "";
   position: absolute;
-  left: 5px;
+  left: 50%;
   top: 10px;
   bottom: 10px;
-  width: 1px;
+  width: 2px;
+  transform: translateX(-50%);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--border) 60%, transparent);
-  opacity: 0;
+  background: color-mix(in srgb, var(--accent) 55%, var(--border));
+  opacity: 0.35;
   transition: opacity 0.12s;
+  pointer-events: none;
 }
 
-.list-resizer:hover::before {
+.list-resizer:hover::before,
+.list-resizer:active::before {
   opacity: 1;
 }
 
