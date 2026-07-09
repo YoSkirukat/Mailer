@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { getDatabase } from "./db";
+import { getDatabase, ensureContactsSchema } from "./db";
 
 export interface MailContact {
   id: string;
@@ -18,14 +18,7 @@ function rowToContact(row: Record<string, unknown>): MailContact {
 }
 
 export function ensureContactsTable(): void {
-  getDatabase().exec(`
-    CREATE TABLE IF NOT EXISTS contacts (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      email TEXT NOT NULL UNIQUE COLLATE NOCASE,
-      created_at TEXT NOT NULL
-    )
-  `);
+  ensureContactsSchema();
 }
 
 export function listContacts(): MailContact[] {

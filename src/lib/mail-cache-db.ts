@@ -1,4 +1,4 @@
-import { getDatabase } from "@/lib/db";
+import { getDatabase, ensureCachedMessageDetailsSchema } from "@/lib/db";
 import type { MailFolderId } from "@/lib/folders";
 import type { EmailSummary } from "@/lib/types";
 
@@ -56,6 +56,8 @@ function migrateLegacyMailCacheSchema(db: ReturnType<typeof getDatabase>): void 
 
 function ensureMailCacheSchema(): void {
   if (schemaReady) return;
+
+  ensureCachedMessageDetailsSchema();
 
   const db = getDatabase();
   db.exec(`

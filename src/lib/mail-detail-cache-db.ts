@@ -1,4 +1,4 @@
-import { getDatabase } from "@/lib/db";
+import { getDatabase, ensureCachedMessageDetailsSchema } from "@/lib/db";
 import { indexMessageBodyForSearch } from "@/lib/mail-cache-db";
 import type { MailFolderId } from "@/lib/folders";
 import type { EmailAttachment, EmailDetail } from "@/lib/types";
@@ -7,37 +7,7 @@ let schemaReady = false;
 
 function ensureMailDetailCacheSchema(): void {
   if (schemaReady) return;
-
-  getDatabase().exec(`
-    CREATE TABLE IF NOT EXISTS cached_message_details (
-      account_id TEXT NOT NULL,
-      folder TEXT NOT NULL,
-      uid INTEGER NOT NULL,
-      subject TEXT NOT NULL DEFAULT '',
-      from_addr TEXT NOT NULL DEFAULT '',
-      to_addr TEXT NOT NULL DEFAULT '',
-      cc TEXT NOT NULL DEFAULT '',
-      date TEXT NOT NULL,
-      seen INTEGER NOT NULL DEFAULT 0,
-      answered INTEGER NOT NULL DEFAULT 0,
-      has_attachments INTEGER NOT NULL DEFAULT 0,
-      snippet TEXT NOT NULL DEFAULT '',
-      text_body TEXT,
-      html_body TEXT,
-      reply_to_header TEXT,
-      original_from_header TEXT,
-      attachments_json TEXT NOT NULL DEFAULT '[]',
-      account_email TEXT NOT NULL DEFAULT '',
-      account_name TEXT NOT NULL DEFAULT '',
-      account_color TEXT NOT NULL DEFAULT '#3b82f6',
-      cached_at TEXT NOT NULL,
-      PRIMARY KEY (account_id, folder, uid)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_cached_message_details_cached_at
-      ON cached_message_details (cached_at DESC);
-  `);
-
+  ensureCachedMessageDetailsSchema();
   schemaReady = true;
 }
 
