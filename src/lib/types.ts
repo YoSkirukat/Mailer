@@ -91,6 +91,12 @@ export interface MailAccountUpdate {
   fromName?: string;
   color?: string;
   signature?: string;
+  password?: string;
+  imapHost?: string;
+  imapPort?: number;
+  smtpHost?: string;
+  smtpPort?: number;
+  ignoreTlsErrors?: boolean;
 }
 
 export interface MailAccountInput {

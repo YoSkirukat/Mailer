@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAccountWithPassword, listAccounts, type AccountWithPassword } from "@/lib/db";
-import {
-  resolveCachedEmailDetail,
-  storeCachedEmailDetail,
-} from "@/lib/email-detail-cache";
+import { resolveCachedEmailDetail, storeCachedEmailDetail } from "@/lib/email-detail-cache";
 import { isValidFolderId, type MailFolderId } from "@/lib/folders";
 import { attachAllLabelsToEmails, attachLabelsToEmails, getLabelsForEmail } from "@/lib/labels-db";
 import { applyMailFilters, applyMailFiltersForUid } from "@/lib/filter-engine";
@@ -50,14 +47,33 @@ async function fetchListForAccount(
     const fresh = isCacheFresh(full.id, folder);
 
     if (cached.length > 0) {
+      const syncErrors: string[] = [];
       if (!fresh) {
-        void syncFolderCache(full, folder, unreadOnly, limit, 0).catch((err) =>
-          console.error(`[mail-sync] ${full.email}:`, err)
-        );
+        // Пытаемся обнаружить проблемы авторизации быстро, чтобы показать
+        // ошибку пользователю (например, если пароль поменяли).
+        try {
+          const timeoutMs = 2200;
+          const didFinish = await Promise.race([
+            syncFolderCache(full, folder, unreadOnly, limit, 0).then(
+              () => true
+            ),
+            new Promise<boolean>((resolve) =>
+              setTimeout(() => resolve(false), timeoutMs)
+            ),
+          ]);
+
+          if (!didFinish) {
+            // Синхронизация может ещё выполняться — ошибки покажем при следующем запросе.
+          }
+        } catch (err) {
+          const detail = formatImapErrorMessage(err);
+          syncErrors.push(`${full.email}: ${detail}`);
+        }
       }
       const filtered = await applyInboxFilters(cached);
       return {
         ...filtered,
+        errors: [...filtered.errors, ...syncErrors],
         hasMore: cached.length >= limit,
       };
     }

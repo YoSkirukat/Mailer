@@ -19,6 +19,7 @@ import {
 } from "./attachments";
 import { isImapSecure, tlsOptions } from "./mail-config";
 import { extractEmailAddress } from "./email-utils";
+import { htmlToPlainText } from "./html-utils";
 import type { EmailDetail, EmailSummary, EmailAttachment } from "./types";
 import type { AddressObject, Headers, ParsedMail } from "mailparser";
 
@@ -775,7 +776,9 @@ async function buildEmailDetailFromMessage(
     answered: message.flags?.has("\\Answered") ?? false,
     hasAttachments: attachments.length > 0,
     attachments,
-    snippet: (parsed.text || "").slice(0, 160),
+    snippet: (parsed.text ||
+      (parsed.html ? htmlToPlainText(parsed.html) : "")
+    ).slice(0, 160),
     text: parsed.text || undefined,
     html: parsed.html || undefined,
     folder: folderId,

@@ -34,6 +34,11 @@ import {
 import type { EmailDetail, EmailSummary, MailAccount, MailLabel } from "@/lib/types";
 
 const LIST_PAGE_SIZE = 50;
+const LIST_DEFAULT_WIDTH = 380;
+const LIST_MIN_WIDTH = 280;
+const SIDEBAR_WIDTH = 260;
+const MIN_VIEWER_WIDTH = 320;
+const APP_GAP_PX = 12;
 
 function mergeEmailSummaries(
   existing: EmailSummary[],
@@ -131,6 +136,13 @@ export default function HomePage() {
   const [listPage, setListPage] = useState(0);
   const [hasMoreEmails, setHasMoreEmails] = useState(false);
   const [loadingMoreEmails, setLoadingMoreEmails] = useState(false);
+  const [listWidth, setListWidth] = useState(LIST_DEFAULT_WIDTH);
+  const appRef = useRef<HTMLDivElement>(null);
+  const listResizeRef = useRef<{ active: boolean; startX: number; startWidth: number }>({
+    active: false,
+    startX: 0,
+    startWidth: LIST_DEFAULT_WIDTH,
+  });
   const activeSearchRef = useRef(activeSearch);
   activeSearchRef.current = activeSearch;
   const countsRefreshTimer = useRef<number | null>(null);
@@ -744,12 +756,14 @@ export default function HomePage() {
         .map((summary) => {
           const folder = getEmailFolder(summary);
           const key = emailDetailKey(summary, folder);
-          if (
-            detailCacheRef.current.has(key) ||
-            prefetchInFlightRef.current.has(key)
-          ) {
-            return null;
-          }
+          const cached = detailCacheRef.current.get(key);
+          const hasUsableSnippet = Boolean(
+            cached?.snippet && cached.snippet.trim().length > 0
+          );
+
+          // Если snippet пустой, считаем кэш "неполным" и перезагружаем.
+          if (hasUsableSnippet) return null;
+          if (prefetchInFlightRef.current.has(key)) return null;
           prefetchInFlightRef.current.add(key);
           return {
             accountId: summary.accountId,
@@ -777,9 +791,33 @@ export default function HomePage() {
         });
         if (!res.ok) return;
         const data = await res.json();
-        for (const detail of (data.emails ?? []) as EmailDetail[]) {
+
+        const details = (data.emails ?? []) as EmailDetail[];
+        const updates = new Map<string, EmailDetail>();
+
+        for (const detail of details) {
           const folder = (detail.folder as MailFolderId) || selectedFolder;
+          updates.set(emailDetailKey(detail, folder), detail);
           storeDetailInCache(detail, folder);
+        }
+
+        // Обновляем превью в списке, чтобы "Входящие" показывали часть тела,
+        // даже если письмо ещё не открывали.
+        if (updates.size > 0) {
+          setEmails((prev) =>
+            prev.map((email) => {
+              const folder = getEmailFolder(email);
+              const key = emailDetailKey(email, folder);
+              const detail = updates.get(key);
+              if (!detail) return email;
+              return {
+                ...email,
+                snippet: detail.snippet ?? email.snippet,
+                hasAttachments: detail.hasAttachments,
+                answered: detail.answered,
+              };
+            })
+          );
         }
       } catch {
         /* фоновая предзагрузка */
@@ -879,6 +917,57 @@ export default function HomePage() {
   const listFolderForDisplay: MailFolderId = selectedLabelId
     ? "inbox"
     : selectedFolder;
+
+  const canResizeList =
+    listFolderForDisplay === "inbox" &&
+    !activeSearch &&
+    selectedLabelId === null &&
+    !unreadListMode;
+
+  const startListResize = (event: React.MouseEvent) => {
+    if (!appRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const appRect = appRef.current.getBoundingClientRect();
+    const sidebarWidth = SIDEBAR_WIDTH;
+
+    const maxListWidth = Math.max(
+      LIST_MIN_WIDTH,
+      Math.floor(
+        appRect.width - sidebarWidth - MIN_VIEWER_WIDTH - APP_GAP_PX * 2
+      )
+    );
+    const minListWidth = LIST_MIN_WIDTH;
+
+    listResizeRef.current = {
+      active: true,
+      startX: event.clientX,
+      startWidth: listWidth,
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onMove = (moveEvent: MouseEvent) => {
+      if (!listResizeRef.current.active) return;
+      const dx = moveEvent.clientX - listResizeRef.current.startX;
+      const next = listResizeRef.current.startWidth + dx;
+      const clamped = Math.min(maxListWidth, Math.max(minListWidth, next));
+      setListWidth(Math.round(clamped));
+    };
+
+    const onUp = () => {
+      listResizeRef.current.active = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
 
   const isSameEmail = (a: EmailSummary, b: EmailSummary) =>
     a.accountId === b.accountId && a.uid === b.uid;
@@ -1327,14 +1416,16 @@ export default function HomePage() {
   useEffect(() => {
     if (loading || emails.length === 0 || activeSearch) return;
 
-    void prefetchEmailDetails(emails.slice(0, 3));
+    const noSnippet = emails.filter((e) => !e.snippet);
+    void prefetchEmailDetails(noSnippet.slice(0, 3));
 
     if (prefetchTimerRef.current !== null) {
       window.clearTimeout(prefetchTimerRef.current);
     }
     prefetchTimerRef.current = window.setTimeout(() => {
       prefetchTimerRef.current = null;
-      prefetchEmailDetails(emails.slice(0, 10));
+      const nextNoSnippet = emails.filter((e) => !e.snippet);
+      prefetchEmailDetails(nextNoSnippet.slice(0, 10));
     }, 800);
 
     return () => {
@@ -1387,7 +1478,15 @@ export default function HomePage() {
   const tabUnreadCount = unreadCounts[selectedFolder] ?? 0;
 
   return (
-    <div className="app">
+    <div
+      ref={appRef}
+      className="app"
+      style={
+        {
+          ["--list-width" as any]: `${listWidth}px`,
+        } as React.CSSProperties
+      }
+    >
       <TabTitle folderName={tabFolderName} unreadCount={tabUnreadCount} />
       <Sidebar
         accounts={accounts}
@@ -1409,6 +1508,13 @@ export default function HomePage() {
       />
 
       <div className="email-list-panel">
+        {canResizeList && (
+          <div
+            className="list-resizer"
+            onMouseDown={startListResize}
+            aria-hidden
+          />
+        )}
         <div className="panel-header">
           <h2>{panelTitle}</h2>
           <div className="panel-header-actions">

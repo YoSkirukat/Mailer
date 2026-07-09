@@ -6,6 +6,66 @@ export function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+const URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+
+function trimTrailingUrlPunctuation(url: string): { url: string; trailing: string } {
+  let trimmed = url;
+  let trailing = "";
+  while (trimmed.length > 0 && /[.,;:!?)'\]}>]$/.test(trimmed)) {
+    trailing = trimmed.slice(-1) + trailing;
+    trimmed = trimmed.slice(0, -1);
+  }
+  return { url: trimmed, trailing };
+}
+
+function linkifyEscapedText(text: string): string {
+  return text.replace(URL_PATTERN, (match) => {
+    const { url, trailing } = trimTrailingUrlPunctuation(match);
+    if (!url) return match;
+    const href = url.startsWith("www.") ? `https://${url}` : url;
+    return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>${escapeHtml(trailing)}`;
+  });
+}
+
+export function linkifyTextToHtml(text: string): string {
+  return linkifyEscapedText(escapeHtml(text));
+}
+
+export function linkifyHtml(html: string): string {
+  const tagPattern = /<[^>]+>/g;
+  let result = "";
+  let lastIndex = 0;
+  let insideAnchor = 0;
+  let insideSkip = 0;
+
+  for (const match of html.matchAll(tagPattern)) {
+    const index = match.index ?? 0;
+    const textBefore = html.slice(lastIndex, index);
+    result +=
+      insideAnchor === 0 && insideSkip === 0
+        ? linkifyEscapedText(escapeHtml(textBefore))
+        : textBefore;
+
+    const tag = match[0];
+    result += tag;
+
+    if (/^<a\b/i.test(tag)) insideAnchor += 1;
+    else if (/^<\/a>/i.test(tag)) insideAnchor = Math.max(0, insideAnchor - 1);
+    else if (/^<(script|style)\b/i.test(tag)) insideSkip += 1;
+    else if (/^<\/(script|style)>/i.test(tag)) insideSkip = Math.max(0, insideSkip - 1);
+
+    lastIndex = index + tag.length;
+  }
+
+  const tail = html.slice(lastIndex);
+  result +=
+    insideAnchor === 0 && insideSkip === 0
+      ? linkifyEscapedText(escapeHtml(tail))
+      : tail;
+
+  return result;
+}
+
 export function plainTextToHtml(text: string): string {
   if (!text.trim()) return "<p><br></p>";
   return text

@@ -143,10 +143,12 @@ export function ComposeModal({
   const [templates, setTemplates] = useState<MailTemplate[]>([]);
   const [fromOpen, setFromOpen] = useState(false);
   const [editorHtml, setEditorHtml] = useState(draft.html);
-  const [size, setSize] = useState({ width: 850, height: 560 });
+  const [size, setSize] = useState({ width: 1020, height: 850 });
+  const [dragOver, setDragOver] = useState(false);
 
   const editorRef = useRef<ComposeEditorHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
   const pendingSendRef = useRef<PendingSendPayload | null>(null);
   const undoIntervalRef = useRef<number | null>(null);
   const signatureAccountIdRef = useRef(draft.accountId);
@@ -187,7 +189,7 @@ export function ComposeModal({
     setShowBcc(Boolean(draft.bcc));
     setMinimized(false);
     setAttachments([]);
-    setSize({ width: 850, height: 560 });
+    setSize({ width: 1020, height: 850 });
     if (undoIntervalRef.current !== null) {
       window.clearInterval(undoIntervalRef.current);
       undoIntervalRef.current = null;
@@ -210,6 +212,26 @@ export function ComposeModal({
     setEditorHtml(html);
     editorRef.current?.setHtml(html);
   }, [draft]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (minimized) return;
+      if (sendUndoSeconds !== null) return;
+      if (!event.ctrlKey) return;
+      if (event.key !== "Enter") return;
+      // Срабатываем только для формы compose
+      event.preventDefault();
+      formRef.current?.requestSubmit();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [minimized, sendUndoSeconds]);
+
+  const handleDropFiles = (files: FileList | null) => {
+    setDragOver(false);
+    handleFilesSelected(files);
+  };
 
   useEffect(() => {
     void fetch("/api/templates")
@@ -256,8 +278,14 @@ export function ComposeModal({
       const maxWidth = window.innerWidth - 32;
       const maxHeight = window.innerHeight - 32;
       setSize({
-        width: Math.min(maxWidth, Math.max(850, startWidth + moveEvent.clientX - startX)),
-        height: Math.min(maxHeight, Math.max(360, startHeight + moveEvent.clientY - startY)),
+        width: Math.min(
+          maxWidth,
+          Math.max(1020, startWidth + moveEvent.clientX - startX)
+        ),
+        height: Math.min(
+          maxHeight,
+          Math.max(520, startHeight + moveEvent.clientY - startY)
+        ),
       });
     };
 
@@ -413,7 +441,9 @@ export function ComposeModal({
     <>
       {!minimized && <div className="compose-backdrop" aria-hidden />}
       <div
-        className={`compose-window ${minimized ? "compose-window--minimized" : ""}`}
+        className={`compose-window ${minimized ? "compose-window--minimized" : ""} ${
+          dragOver ? "compose-window--dragover" : ""
+        }`}
         style={
           minimized
             ? undefined
@@ -421,6 +451,33 @@ export function ComposeModal({
         }
         role="dialog"
         aria-label={draft.title}
+        onDragEnter={(e) => {
+          if (minimized) return;
+          e.preventDefault();
+          e.stopPropagation();
+          setDragOver(true);
+        }}
+        onDragOver={(e) => {
+          if (minimized) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (!dragOver) setDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          if (minimized) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const related = e.relatedTarget as Node | null;
+          if (!related || !e.currentTarget.contains(related)) {
+            setDragOver(false);
+          }
+        }}
+        onDrop={(e) => {
+          if (minimized) return;
+          e.preventDefault();
+          e.stopPropagation();
+          void (e.dataTransfer?.files ? handleDropFiles(e.dataTransfer.files) : null);
+        }}
       >
       <header
         className="compose-header"
@@ -453,7 +510,7 @@ export function ComposeModal({
       </header>
 
       {!minimized && (
-        <form className="compose-form" onSubmit={handleSubmit}>
+        <form ref={formRef} className="compose-form" onSubmit={handleSubmit}>
           {error && <div className="error-banner compose-error">{error}</div>}
 
           <div className="compose-field compose-field--to">

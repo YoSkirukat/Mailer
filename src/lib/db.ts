@@ -330,11 +330,51 @@ export function updateAccount(
   const signature =
     input.signature !== undefined ? input.signature : existing.signature;
 
+  const imapHost =
+    input.imapHost !== undefined ? input.imapHost.trim() : existing.imapHost;
+  const imapPort =
+    input.imapPort !== undefined ? Number(input.imapPort) : existing.imapPort;
+  const smtpHost =
+    input.smtpHost !== undefined ? input.smtpHost.trim() : existing.smtpHost;
+  const smtpPort =
+    input.smtpPort !== undefined ? Number(input.smtpPort) : existing.smtpPort;
+  const ignoreTlsErrors =
+    input.ignoreTlsErrors !== undefined
+      ? Boolean(input.ignoreTlsErrors)
+      : existing.ignoreTlsErrors;
+
   getDb()
     .prepare(
-      "UPDATE accounts SET name = ?, from_name = ?, color = ?, signature = ? WHERE id = ?"
+      `UPDATE accounts
+       SET name = ?,
+           from_name = ?,
+           color = ?,
+           signature = ?,
+           imap_host = ?,
+           imap_port = ?,
+           smtp_host = ?,
+           smtp_port = ?,
+           ignore_tls_errors = ?
+       WHERE id = ?`
     )
-    .run(name, fromName, color, signature, id);
+    .run(
+      name,
+      fromName,
+      color,
+      signature,
+      imapHost,
+      imapPort,
+      smtpHost,
+      smtpPort,
+      ignoreTlsErrors ? 1 : 0,
+      id
+    );
+
+  if (input.password && input.password.trim()) {
+    getDb()
+      .prepare("UPDATE accounts SET password_enc = ? WHERE id = ?")
+      .run(encrypt(input.password.trim()), id);
+  }
 
   return getAccount(id);
 }

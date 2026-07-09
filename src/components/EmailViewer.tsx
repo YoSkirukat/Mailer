@@ -5,6 +5,7 @@ import { formatAttachmentSize, isPreviewableAttachment } from "@/lib/attachments
 import { FolderIcon } from "@/components/FolderIcon";
 import { LabelBadgeList } from "@/components/LabelBadge";
 import { SenderAddressMenu } from "@/components/SenderAddressMenu";
+import { linkifyHtml, linkifyTextToHtml } from "@/lib/html-utils";
 import type { EmailDetail } from "@/lib/types";
 export type EmailAction =
   | "reply"
@@ -318,12 +319,15 @@ export function EmailViewer({
         ) : email.html ? (
           <div
             className="email-body-html"
-            dangerouslySetInnerHTML={{ __html: email.html }}
+            dangerouslySetInnerHTML={{ __html: linkifyHtml(email.html) }}
+          />
+        ) : email.text ? (
+          <div
+            className="email-body"
+            dangerouslySetInnerHTML={{ __html: linkifyTextToHtml(email.text) }}
           />
         ) : (
-          <div className="email-body">
-            {email.text || "(пустое письмо)"}
-          </div>
+          <div className="email-body">(пустое письмо)</div>
         )}
       </div>
     </div>

@@ -440,16 +440,35 @@ export function listCachedMessages(
 
   const placeholders = accountIds.map(() => "?").join(", ");
   let sql = `
-    SELECT * FROM cached_messages
-    WHERE folder = ? AND account_id IN (${placeholders})
+    SELECT
+      m.account_id,
+      m.folder,
+      m.uid,
+      m.subject,
+      m.from_addr,
+      m.to_addr,
+      m.date,
+      m.seen,
+      m.answered,
+      m.has_attachments,
+      COALESCE(NULLIF(m.snippet, ''), d.snippet, '') AS snippet,
+      m.account_email,
+      m.account_name,
+      m.account_color
+    FROM cached_messages m
+    LEFT JOIN cached_message_details d
+      ON m.account_id = d.account_id
+     AND m.folder = d.folder
+     AND m.uid = d.uid
+    WHERE m.folder = ? AND m.account_id IN (${placeholders})
   `;
   const params: unknown[] = [folder, ...accountIds];
 
   if (unreadOnly) {
-    sql += " AND seen = 0";
+    sql += " AND m.seen = 0";
   }
 
-  sql += " ORDER BY date DESC LIMIT ? OFFSET ?";
+  sql += " ORDER BY m.date DESC LIMIT ? OFFSET ?";
   params.push(limit, offset);
 
   const rows = getDatabase()

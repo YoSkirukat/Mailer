@@ -40,19 +40,34 @@ export async function POST(request: Request) {
       const account = getAccountWithPassword(accountId);
       if (!account) continue;
 
-      const uids = [
-        ...new Set(
-          groupItems
-            .map((item) => item.uid)
-            .filter(
-              (uid) => !resolveCachedEmailDetail(accountId, folder, uid)
-            )
-        ),
-      ];
+      const uniqUids = [...new Set(groupItems.map((item) => item.uid))];
 
-      if (uids.length === 0) continue;
+      const cachedDetails: EmailDetail[] = [];
+      const missingUids: number[] = [];
 
-      const batch = await fetchEmailsBatch(account, folder, uids.slice(0, 15));
+      for (const uid of uniqUids) {
+        const cached = resolveCachedEmailDetail(accountId, folder, uid);
+        if (cached && cached.snippet && cached.snippet.trim()) {
+          cachedDetails.push(cached);
+        } else {
+          missingUids.push(uid);
+        }
+      }
+
+      // Даже если детали уже есть в кэше, вернём их клиенту,
+      // чтобы список мог сразу показать preview/snippet.
+      if (cachedDetails.length > 0) {
+        const withLabels = attachLabelsToEmails(cachedDetails, folder);
+        emails.push(...withLabels);
+      }
+
+      if (missingUids.length === 0) continue;
+
+      const batch = await fetchEmailsBatch(
+        account,
+        folder,
+        missingUids.slice(0, 15)
+      );
       const withLabels = attachLabelsToEmails(batch, folder);
 
       for (const detail of withLabels) {

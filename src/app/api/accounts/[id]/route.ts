@@ -24,11 +24,22 @@ export async function PATCH(
       fromName: body.fromName?.trim(),
       color: body.color?.trim(),
       signature: body.signature,
+      password: body.password,
+      imapHost: body.imapHost?.trim(),
+      imapPort: body.imapPort,
+      smtpHost: body.smtpHost?.trim(),
+      smtpPort: body.smtpPort,
+      ignoreTlsErrors: body.ignoreTlsErrors,
     });
 
     if (!updated) {
       return NextResponse.json({ error: "Аккаунт не найден" }, { status: 404 });
     }
+
+    // Чтобы при смене пароля/серверов пользователь увидел актуальную почту сразу,
+    // чистим локальный кэш писем.
+    clearCachedMessagesForAccount(id);
+    clearCachedMessageDetailsForAccount(id);
 
     return NextResponse.json(updated);
   } catch (error) {

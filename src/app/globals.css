@@ -598,11 +598,56 @@ a {
   min-width: var(--list-width);
   display: flex;
   flex-direction: column;
+  position: relative;
   background: var(--surface);
   border: none;
   border-radius: var(--block-radius);
   box-shadow: var(--shadow-block);
   overflow: hidden;
+}
+
+.list-resizer {
+  position: absolute;
+  right: -6px;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  cursor: col-resize;
+  z-index: 10;
+}
+
+.list-resizer::after {
+  content: "⇔";
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  line-height: 1;
+  color: color-mix(in srgb, var(--text-muted) 70%, var(--surface));
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.list-resizer:hover::after {
+  opacity: 1;
+}
+
+.list-resizer::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 10px;
+  bottom: 10px;
+  width: 1px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.list-resizer:hover::before {
+  opacity: 1;
 }
 
 .panel-header {
@@ -1560,6 +1605,18 @@ a {
 .email-body-html img {
   max-width: 100%;
   height: auto;
+}
+
+.email-body a,
+.email-body-html a {
+  color: var(--accent);
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.email-body a:hover,
+.email-body-html a:hover {
+  text-decoration: underline;
 }
 
 .email-body-loading {
@@ -2607,9 +2664,9 @@ a {
   bottom: auto;
   transform: translate(-50%, -50%);
   z-index: 200;
-  min-width: 850px;
-  width: 850px;
-  height: 560px;
+  min-width: 1020px;
+  width: 1020px;
+  height: 850px;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 32px);
   background: var(--surface);
@@ -2619,6 +2676,18 @@ a {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.compose-window--dragover {
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.22),
+    0 0 0 2px
+      color-mix(in srgb, var(--accent) 70%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--accent) 35%,
+    var(--border)
+  );
 }
 
 .compose-window--minimized {

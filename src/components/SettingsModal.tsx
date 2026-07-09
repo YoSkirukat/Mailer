@@ -35,6 +35,12 @@ export function SettingsModal({
   const [fromName, setFromName] = useState("");
   const [color, setColor] = useState<string>(LABEL_COLORS[5]);
   const [signatureHtml, setSignatureHtml] = useState("");
+  const [password, setPassword] = useState("");
+  const [imapHost, setImapHost] = useState("");
+  const [imapPort, setImapPort] = useState<number>(993);
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState<number>(465);
+  const [ignoreTlsErrors, setIgnoreTlsErrors] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const signatureEditorRef = useRef<ComposeEditorHandle>(null);
@@ -47,6 +53,12 @@ export function SettingsModal({
     setFromName("");
     setColor(LABEL_COLORS[5]);
     setSignatureHtml("");
+    setPassword("");
+    setImapHost("");
+    setImapPort(993);
+    setSmtpHost("");
+    setSmtpPort(465);
+    setIgnoreTlsErrors(false);
     setError("");
     setView("list");
   };
@@ -57,6 +69,12 @@ export function SettingsModal({
     setFromName(account.fromName ?? "");
     setColor(account.color || LABEL_COLORS[5]);
     setSignatureHtml(richTextToEditorHtml(account.signature ?? ""));
+    setPassword("");
+    setImapHost(account.imapHost ?? "");
+    setImapPort(account.imapPort ?? 993);
+    setSmtpHost(account.smtpHost ?? "");
+    setSmtpPort(account.smtpPort ?? 465);
+    setIgnoreTlsErrors(Boolean(account.ignoreTlsErrors));
     setError("");
     setView("edit");
   };
@@ -73,7 +91,18 @@ export function SettingsModal({
       const res = await fetch(`/api/accounts/${editingId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, fromName, color, signature }),
+        body: JSON.stringify({
+          name,
+          fromName,
+          color,
+          signature,
+          password: password.trim() ? password.trim() : undefined,
+          imapHost,
+          imapPort,
+          smtpHost,
+          smtpPort,
+          ignoreTlsErrors,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -330,6 +359,73 @@ export function SettingsModal({
                   Подпись автоматически добавляется в новые письма и ответы с
                   этого ящика. Форматирование сохраняется.
                 </p>
+              </div>
+
+              <div className="form-group">
+                <label>Пароль / пароль приложения</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="Оставьте пустым, чтобы не менять"
+                />
+              </div>
+
+              <div className="form-group">
+                <label>IMAP сервер</label>
+                <div className="form-row">
+                  <input
+                    value={imapHost}
+                    onChange={(event) => setImapHost(event.target.value)}
+                  />
+                  <input
+                    type="number"
+                    value={imapPort}
+                    onChange={(event) => setImapPort(Number(event.target.value))}
+                  />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>SMTP сервер</label>
+                <div className="form-row">
+                  <input
+                    value={smtpHost}
+                    onChange={(event) => setSmtpHost(event.target.value)}
+                  />
+                  <input
+                    type="number"
+                    value={smtpPort}
+                    onChange={(event) => setSmtpPort(Number(event.target.value))}
+                  />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    cursor: "pointer",
+                    color: "var(--text-muted)",
+                    fontSize: "0.85rem",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={ignoreTlsErrors}
+                    onChange={(event) => setIgnoreTlsErrors(event.target.checked)}
+                    style={{ marginTop: 3 }}
+                  />
+                  <span>
+                    Игнорировать ошибки сертификата (TLS)
+                    {` `}
+                    <span style={{ color: "var(--text-muted)" }}>
+                      (для корпоративных/самоподписанных серверов)
+                    </span>
+                  </span>
+                </label>
               </div>
 
               <div className="form-actions">
