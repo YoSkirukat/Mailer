@@ -10,6 +10,39 @@ interface AccountFormProps {
   embedded?: boolean;
 }
 
+function providerFromEmail(email: string): string | null {
+  const domain = email.trim().toLowerCase().split("@")[1];
+  if (!domain) return null;
+
+  if (domain === "gmail.com" || domain === "googlemail.com") return "gmail";
+  if (
+    domain === "yandex.ru" ||
+    domain === "ya.ru" ||
+    domain.endsWith(".yandex.ru")
+  ) {
+    return "yandex";
+  }
+  if (
+    domain === "mail.ru" ||
+    domain === "bk.ru" ||
+    domain === "inbox.ru" ||
+    domain === "list.ru" ||
+    domain === "internet.ru"
+  ) {
+    return "mailru";
+  }
+  if (
+    domain === "outlook.com" ||
+    domain === "hotmail.com" ||
+    domain === "live.com" ||
+    domain.endsWith(".onmicrosoft.com")
+  ) {
+    return "outlook";
+  }
+
+  return null;
+}
+
 export function AccountForm({
   onClose,
   onCancel,
@@ -113,7 +146,12 @@ export function AccountForm({
             <input
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                const value = e.target.value;
+                setEmail(value);
+                const detected = providerFromEmail(value);
+                if (detected) handleProviderChange(detected);
+              }}
               placeholder="you@example.com"
               required
             />
@@ -129,7 +167,28 @@ export function AccountForm({
             />
           </div>
 
-          {(provider === "custom" || provider === "gmail") && (
+          {provider !== "custom" &&
+            provider !== "gmail" &&
+            provider !== "mailru" && (
+            <>
+              <div className="form-group">
+                <label>IMAP сервер</label>
+                <div className="form-row">
+                  <input value={imapHost} readOnly required />
+                  <input type="number" value={imapPort} readOnly required />
+                </div>
+              </div>
+              <div className="form-group">
+                <label>SMTP сервер</label>
+                <div className="form-row">
+                  <input value={smtpHost} readOnly required />
+                  <input type="number" value={smtpPort} readOnly required />
+                </div>
+              </div>
+            </>
+          )}
+
+          {(provider === "custom" || provider === "gmail" || provider === "mailru") && (
             <>
               <div className="form-group">
                 <label>IMAP сервер</label>
@@ -195,6 +254,13 @@ export function AccountForm({
             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
               Для Gmail используйте пароль приложения (не обычный пароль).
               Создайте его в настройках Google-аккаунта → Безопасность.
+            </p>
+          )}
+
+          {provider === "mailru" && (
+            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+              Для Mail.ru включите IMAP в настройках почты и используйте пароль
+              для внешнего приложения (не основной пароль от аккаунта).
             </p>
           )}
 

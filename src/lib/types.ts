@@ -177,7 +177,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     imapHost: "imap.mail.ru",
     imapPort: 993,
     smtpHost: "smtp.mail.ru",
-    smtpPort: 465,
+    smtpPort: 587,
   },
   {
     id: "outlook",

@@ -118,7 +118,11 @@ export function formatImapErrorMessage(error: unknown): string {
     return "Почтовый сервер не найден";
   }
   if (error instanceof Error && error.message.trim()) {
-    return error.message.trim();
+    const message = error.message.trim();
+    if (message.toLowerCase() === "command failed") {
+      return "Ошибка авторизации IMAP. Проверьте пароль (для Mail.ru и Gmail — пароль приложения) и что доступ по IMAP включён в настройках почты.";
+    }
+    return message;
   }
   return "Ошибка загрузки";
 }

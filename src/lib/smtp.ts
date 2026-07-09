@@ -122,6 +122,32 @@ export async function sendMail(
   return info;
 }
 
+export function formatSmtpErrorMessage(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  if (code === "ETIMEDOUT") {
+    return "Таймаут подключения к SMTP-серверу";
+  }
+  if (code === "ECONNRESET") {
+    return "Соединение с SMTP-сервером разорвано";
+  }
+  if (code === "ENOTFOUND") {
+    return "SMTP-сервер не найден";
+  }
+
+  const message =
+    error instanceof Error ? error.message.trim().toLowerCase() : "";
+  if (message.includes("invalid login") || message.includes("authentication")) {
+    return "Неверный логин или пароль SMTP. Для Mail.ru и Gmail используйте пароль приложения.";
+  }
+  if (message === "command failed") {
+    return "SMTP-сервер отклонил команду. Попробуйте порт 587 вместо 465 или проверьте пароль приложения.";
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+  return "Ошибка подключения к SMTP";
+}
+
 export async function testSmtpConnection(
   account: AccountWithPassword
 ): Promise<void> {

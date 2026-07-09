@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAccount, listAccounts } from "@/lib/db";
-import { testImapConnection } from "@/lib/imap";
-import { testSmtpConnection } from "@/lib/smtp";
+import { testImapConnection, formatImapErrorMessage } from "@/lib/imap";
+import { testSmtpConnection, formatSmtpErrorMessage } from "@/lib/smtp";
 import type { MailAccountInput } from "@/lib/types";
 
 export async function GET() {
@@ -42,8 +42,17 @@ export async function POST(request: Request) {
       createdAt: new Date().toISOString(),
     };
 
-    await testImapConnection(testAccount);
-    await testSmtpConnection(testAccount);
+    try {
+      await testImapConnection(testAccount);
+    } catch (error) {
+      throw new Error(`IMAP: ${formatImapErrorMessage(error)}`);
+    }
+
+    try {
+      await testSmtpConnection(testAccount);
+    } catch (error) {
+      throw new Error(`SMTP: ${formatSmtpErrorMessage(error)}`);
+    }
 
     const account = createAccount(body);
     return NextResponse.json(account, { status: 201 });
